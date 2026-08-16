@@ -1,0 +1,12 @@
+services:
+  feedss:
+    build: .
+    container_name: feedss
+    ports:
+      - "4317:4317"
+    environment:
+      APP_DB_PATH: /data/feedss.db
+      APP_PORT: 4317
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

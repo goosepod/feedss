@@ -1,0 +1,41 @@
+:root {
+  --bg: #0f172a;
+  --panel: #111827;
+  --panel-alt: #1f2937;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --text: #e2e8f0;
+  --border: #334155;
+  --danger: #f87171;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+body { display: flex; }
+.app-shell { display: flex; width: 100%; height: 100vh; }
+.sidebar { width: 320px; background: var(--panel); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.toolbar h1 { margin: 0; font-size: 1.4rem; }
+button { background: var(--accent); color: #082f49; border: none; border-radius: 8px; padding: 8px 12px; font-weight: 700; cursor: pointer; }
+button.secondary { background: var(--panel-alt); color: var(--text); }
+#group-list, #feed-list { margin-top: 12px; }
+.group-item, .feed-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-alt); margin-bottom: 8px; cursor: pointer; }
+.group-item.active, .feed-item.active { border-color: var(--accent); }
+.main-panel { flex: 1; display: flex; flex-direction: column; }
+.headline-bar { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.meta-hints { display: flex; gap: 12px; color: var(--muted); font-size: 0.8rem; }
+.article-pane { padding: 16px 20px; overflow-y: auto; }
+.article-card { background: var(--panel); border: 1px solid var(--border); padding: 16px; border-radius: 12px; margin-bottom: 12px; }
+.article-card h2 { margin-top: 0; }
+.article-card .meta { color: var(--muted); margin-bottom: 8px; font-size: 0.85rem; }
+.article-card a { color: var(--accent); }
+.article-card img, .article-card video { max-width: 100%; border-radius: 8px; margin-top: 12px; }
+.article-card .article-body { line-height: 1.6; }
+.login-page { display: grid; place-items: center; height: 100vh; }
+.login-card { display: grid; gap: 16px; width: 420px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+.login-card h1 { margin: 0; }
+.login-card label { display: grid; gap: 8px; }
+.login-card input, .login-card button, dialog input, dialog select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: #0b1220; color: var(--text); }
+dialog { border: none; border-radius: 14px; padding: 0; background: transparent; }
+dialog form { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 14px; padding: 20px; width: min(460px, 90vw); display: grid; gap: 14px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>feedss</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="toolbar">
+        <h1>feedss</h1>
+        <button id="add-feed-btn">Add Feed</button>
+      </div>
+      <div id="group-list"></div>
+      <div id="feed-list"></div>
+    </aside>
+
+    <main class="main-panel">
+      <div class="headline-bar">
+        <div id="feed-header">Select a feed</div>
+        <div class="meta-hints">
+          <span>j/k</span> <span>v</span> <span>c</span>
+        </div>
+      </div>
+      <div id="article-pane" class="article-pane"></div>
+    </main>
+  </div>
+
+  <dialog id="feed-modal">
+    <form method="dialog">
+      <h2>Add feed</h2>
+      <label>
+        Feed URL
+        <input id="feed-url" type="url" required>
+      </label>
+      <label>
+        Group
+        <input id="feed-group" type="text" placeholder="Inbox">
+      </label>
+      <label>
+        Display mode
+        <select id="feed-display-mode">
+          <option value="headline">Headline</option>
+          <option value="headline-blurb">Headline + Blurb</option>
+          <option value="full">Full Content</option>
+        </select>
+      </label>
+      <label>
+        Sort order
+        <select id="feed-sort-direction">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-feed-btn">Cancel</button>
+        <button type="submit" id="save-feed-btn">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
