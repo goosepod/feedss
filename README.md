@@ -54,6 +54,26 @@ docker compose up --build
 
 The included compose file stores the SQLite database in `./data/feedss.db`.
 
+To run the published image from your own compose file:
+
+```yaml
+services:
+  feedss:
+    image: ghcr.io/goosepod/feedss:v0.1.0
+    container_name: feedss
+    ports:
+      - "4317:4317"
+    environment:
+      APP_DB_PATH: /data/feedss.db
+      APP_PORT: 4317
+    volumes:
+      - feedss-data:/data
+    restart: unless-stopped
+
+volumes:
+  feedss-data:
+```
+
 ## Run the Published Docker Image
 
 Release images are published to GitHub Container Registry:
