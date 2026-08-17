@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 async function login(page) {
   await page.goto('/login');
 	await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+	await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/static/favicon.svg');
 	await expect(page.locator('.login-card')).toBeVisible();
 	await expect(page.locator('.login-card')).toHaveCSS('display', 'grid');
 	await expect(page.getByLabel('Username')).toHaveCSS('caret-color', 'rgb(24, 32, 42)');
@@ -90,6 +91,8 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
   await login(page);
 
   await expect(page.getByRole('link', { name: 'feedss', exact: true })).toBeVisible();
+	await expect(page).toHaveTitle('(121) feedss');
+	await expect.poll(() => page.locator('link[rel="icon"]').getAttribute('type')).toBe('image/png');
   await expect(page.getByRole('button', { name: 'Add feed', exact: true })).toBeVisible();
 	await page.keyboard.press('?');
 	const shortcutsDialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' });

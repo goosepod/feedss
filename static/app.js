@@ -1,4 +1,6 @@
 const ARTICLE_PAGE_SIZE = 30;
+const DEFAULT_TITLE = 'feedss';
+const STATIC_FAVICON = '/static/favicon.svg';
 
 const state = {
   groups: [],
@@ -79,6 +81,7 @@ async function loadGroups() {
 		[...state.expandedGroupIds].filter(id => state.groups.some(group => group.id === id)),
 	);
 	renderSubscriptions();
+	updateBrowserUnreadBadge();
 }
 
 async function loadFeeds() {
@@ -232,6 +235,88 @@ function renderSubscriptions() {
     elements.subscriptionList.appendChild(groupElement);
   }
 	if (sidebar) sidebar.scrollTop = scrollTop;
+	updateBrowserUnreadBadge();
+}
+
+function totalUnreadCount() {
+	return state.groups.reduce((sum, group) => sum + (Number(group.unread_count) || 0), 0);
+}
+
+function formatBadgeCount(count) {
+	if (count > 99) return '99+';
+	return String(count);
+}
+
+function roundedRectPath(context, x, y, width, height, radius) {
+	context.beginPath();
+	context.moveTo(x + radius, y);
+	context.lineTo(x + width - radius, y);
+	context.quadraticCurveTo(x + width, y, x + width, y + radius);
+	context.lineTo(x + width, y + height - radius);
+	context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+	context.lineTo(x + radius, y + height);
+	context.quadraticCurveTo(x, y + height, x, y + height - radius);
+	context.lineTo(x, y + radius);
+	context.quadraticCurveTo(x, y, x + radius, y);
+	context.closePath();
+}
+
+function drawBaseIcon(context) {
+	context.clearRect(0, 0, 64, 64);
+	roundedRectPath(context, 0, 0, 64, 64, 14);
+	context.fillStyle = '#176b4d';
+	context.fill();
+	context.fillStyle = '#ffffff';
+	context.beginPath();
+	context.arc(22, 42, 5, 0, Math.PI * 2);
+	context.fill();
+	context.strokeStyle = '#ffffff';
+	context.lineCap = 'round';
+	context.lineWidth = 6;
+	context.beginPath();
+	context.arc(19, 45, 20, -Math.PI / 2, 0);
+	context.stroke();
+	context.beginPath();
+	context.arc(19, 45, 32, -Math.PI / 2, 0);
+	context.stroke();
+	context.strokeStyle = '#b9e3d1';
+	context.lineWidth = 5;
+	context.beginPath();
+	context.moveTo(20, 18);
+	context.lineTo(32, 18);
+	context.stroke();
+}
+
+function updateBrowserUnreadBadge() {
+	const unread = totalUnreadCount();
+	document.title = unread > 0 ? `(${unread}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
+	const favicon = elements.favicon || document.getElementById('favicon');
+	if (!favicon) return;
+	if (unread <= 0) {
+		favicon.href = STATIC_FAVICON;
+		favicon.type = 'image/svg+xml';
+		return;
+	}
+	const canvas = document.createElement('canvas');
+	canvas.width = 64;
+	canvas.height = 64;
+	const context = canvas.getContext('2d');
+	if (!context) return;
+	drawBaseIcon(context);
+	context.fillStyle = '#b42318';
+	context.beginPath();
+	context.arc(47, 17, 15, 0, Math.PI * 2);
+	context.fill();
+	context.strokeStyle = '#ffffff';
+	context.lineWidth = 3;
+	context.stroke();
+	context.fillStyle = '#ffffff';
+	context.font = unread > 99 ? '700 12px system-ui, sans-serif' : '700 16px system-ui, sans-serif';
+	context.textAlign = 'center';
+	context.textBaseline = 'middle';
+	context.fillText(formatBadgeCount(unread), 47, 17);
+	favicon.href = canvas.toDataURL('image/png');
+	favicon.type = 'image/png';
 }
 
 function selectGroup(groupID) {
@@ -800,6 +885,7 @@ function bindKeyboard() {
 function cacheElements() {
   Object.assign(elements, {
 	status: document.getElementById('status'), subscriptionList: document.getElementById('subscription-list'),
+	favicon: document.getElementById('favicon'),
 	readerLabel: document.getElementById('reader-label'), feedHeader: document.getElementById('feed-header'),
 	articlePane: document.getElementById('article-pane'), articleCount: document.getElementById('article-count'),
 	markAllRead: document.getElementById('mark-all-read-btn'),
