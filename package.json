@@ -1,0 +1,12 @@
+{
+  "name": "feedss-ui-tests",
+  "private": true,
+  "scripts": {
+    "pretest:ui": "go build -o .feedss-ui-test.exe .",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

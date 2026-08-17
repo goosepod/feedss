@@ -1,0 +1,12 @@
+.git
+.cache
+.gocache
+.npm-cache
+data
+node_modules
+playwright-report
+test-results
+.feedss-ui-test.exe*
+*.db
+*.db-shm
+*.db-wal

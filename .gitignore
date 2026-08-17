@@ -7,9 +7,19 @@ bin/
 
 # Go dependencies and caches
 /.cache/
+/.gocache/
+
+# Node test dependencies and output
+/node_modules/
+/.npm-cache/
+/playwright-report/
+/test-results/
+/.feedss-ui-test.exe*
+/.feedss-ui-test.pid
 
 # Local runtime data
 .db/
+/data/
 *.db
 *.sqlite
 *.sqlite3

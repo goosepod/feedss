@@ -1,46 +1,81 @@
 # feedss
 
-A home-lab RSS reader focused on fast keyboard navigation and simple local use over Tailscale or LAN.
+feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, manual refresh, and a local SQLite database.
 
-## Stack
+It is designed for a trusted home-lab, desktop, LAN, or Tailscale-style environment rather than public multi-tenant hosting.
 
-- Go + standard HTTP server
-- SQLite database
-- Docker deployment
-- Keyboard-first UI
+## Quick Start
 
-## Features planned
+The first run creates a default admin account:
 
-- Feed groups and simple feed management
-- Keyboard navigation with `j` / `k` and `Shift+j` / `Shift+k`
-- `v` to open the article in a new tab
-- `c` to open comments when available
-- Per-feed display modes: headline, headline + blurb, full content
-- Sort order: ascending or descending
-- OPML import/export
-- Single-user and admin-lite flow for local use
+- Username: `admin`
+- Password: `admin123`
 
-## Local development
+Open http://localhost:4317 after starting the app.
+
+## Run From Source
 
 ```bash
 go run .
 ```
 
-Then open http://localhost:4317.
+By default, feedss listens on port `4317` and stores data at `data/feedss.db`.
 
-The default admin account is created automatically on first boot:
+## Run a Release Binary
 
-- Username: `admin`
-- Password: `admin123`
+Download the archive for your platform from the GitHub release, unpack it, and run the binary.
 
-## Docker
+Windows PowerShell:
+
+```powershell
+.\feedss.exe
+```
+
+Linux/macOS:
+
+```bash
+chmod +x ./feedss
+./feedss
+```
+
+Optional environment variables:
+
+```bash
+APP_PORT=4317
+APP_DB_PATH=./data/feedss.db
+APP_DISABLE_AUTO_REFRESH=false
+```
+
+## Run With Docker Compose
 
 ```bash
 docker compose up --build
-
-Then open http://localhost:4317.
 ```
 
-## Notes
+The included compose file stores the SQLite database in `./data/feedss.db`.
 
-This is intentionally a lean starter project designed for a local, trusted environment rather than a public SaaS deployment.
+## Run the Published Docker Image
+
+Release images are published to GitHub Container Registry:
+
+```bash
+docker run --rm \
+  -p 4317:4317 \
+  -e APP_DB_PATH=/data/feedss.db \
+  -v feedss-data:/data \
+  ghcr.io/goosepod/feedss:v0.1.0
+```
+
+Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
+
+## Keyboard Shortcuts
+
+- `j` / `k`: next or previous article
+- `v`: open the selected article
+- `c`: open comments when available
+- `Shift+A`: mark the current feed or group as read
+- `?`: show shortcuts
+
+## Releases
+
+Pushing a tag like `v0.1.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

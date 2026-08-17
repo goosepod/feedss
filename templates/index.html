@@ -4,63 +4,153 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>feedss</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816-1">
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="toolbar">
-        <h1>feedss</h1>
-        <button id="add-feed-btn">Add Feed</button>
-      </div>
-      <div id="group-list"></div>
-      <div id="feed-list"></div>
-    </aside>
+    <header class="app-header">
+      <a class="brand" href="/">feedss</a>
+      <nav class="app-actions" aria-label="Account and feed actions">
+        <button id="import-btn" class="button-secondary" type="button">Import</button>
+        <button id="export-btn" class="button-secondary" type="button">Export</button>
+        <button id="settings-btn" class="button-secondary" type="button">Settings</button>
+        <a class="button button-secondary" href="/logout">Log out</a>
+        <button id="add-feed-btn" type="button">Add feed</button>
+      </nav>
+    </header>
 
-    <main class="main-panel">
-      <div class="headline-bar">
-        <div id="feed-header">Select a feed</div>
-        <div class="meta-hints">
-          <span>j/k</span> <span>v</span> <span>c</span>
+    <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+
+    <div class="app-content">
+      <aside class="sidebar" aria-label="Feed navigation">
+        <section class="nav-section">
+          <h2>Subscriptions</h2>
+          <div id="subscription-list" class="subscription-list"></div>
+        </section>
+      </aside>
+
+      <main class="main-panel">
+        <header class="reader-header">
+          <div>
+			<p id="reader-label" class="reader-label">Current feed</p>
+            <h1 id="feed-header">Select a feed</h1>
+          </div>
+          <div class="article-controls" aria-label="Article actions">
+			<button id="feed-settings-btn" class="button-secondary" type="button" hidden>Feed settings</button>
+            <span id="article-count" aria-live="polite">0 articles</span>
+            <button id="mark-all-read-btn" class="button-secondary" type="button" disabled>Mark all read</button>
+          </div>
+        </header>
+        <div id="article-pane" class="article-pane">
+          <div class="empty-state">Choose a feed to start reading.</div>
         </div>
-      </div>
-      <div id="article-pane" class="article-pane"></div>
-    </main>
+      </main>
+    </div>
   </div>
 
-  <dialog id="feed-modal">
-    <form method="dialog">
-      <h2>Add feed</h2>
-      <label>
-        Feed URL
-        <input id="feed-url" type="url" required>
-      </label>
-      <label>
-        Group
-        <input id="feed-group" type="text" placeholder="Inbox">
-      </label>
-      <label>
-        Display mode
-        <select id="feed-display-mode">
-          <option value="headline">Headline</option>
-          <option value="headline-blurb">Headline + Blurb</option>
-          <option value="full">Full Content</option>
-        </select>
-      </label>
-      <label>
-        Sort order
-        <select id="feed-sort-direction">
-          <option value="desc">Newest first</option>
-          <option value="asc">Oldest first</option>
-        </select>
-      </label>
+  <dialog id="feed-modal" aria-labelledby="feed-modal-title">
+    <form id="feed-form">
+      <h2 id="feed-modal-title">Add feed</h2>
+      <label for="feed-url">Feed URL</label>
+      <input id="feed-url" type="url" placeholder="https://example.com/feed.xml" required>
+      <label for="feed-group">Group</label>
+      <input id="feed-group" type="text" placeholder="Inbox">
+      <label for="feed-display-mode">Display mode</label>
+      <select id="feed-display-mode">
+        <option value="headline">Headline</option>
+        <option value="headline-blurb">Headline and summary</option>
+        <option value="full">Full content</option>
+      </select>
+      <label for="feed-sort-direction">Sort order</label>
+      <select id="feed-sort-direction">
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
+      <p id="feed-form-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">
-        <button type="button" id="cancel-feed-btn">Cancel</button>
-        <button type="submit" id="save-feed-btn">Save</button>
+        <button type="button" id="cancel-feed-btn" class="button-secondary">Cancel</button>
+        <button type="submit" id="save-feed-btn">Add feed</button>
       </div>
     </form>
   </dialog>
 
-  <script src="/static/app.js"></script>
+	<dialog id="feed-settings-modal" aria-labelledby="feed-settings-title">
+		<form id="feed-settings-form">
+			<h2 id="feed-settings-title">Feed settings</h2>
+			<p id="feed-settings-name" class="dialog-subtitle"></p>
+			<label for="feed-settings-display-mode">Display mode</label>
+			<select id="feed-settings-display-mode">
+				<option value="headline">Headline</option>
+				<option value="headline-blurb">Headline and summary</option>
+				<option value="full">Full content</option>
+			</select>
+			<label for="feed-settings-sort-direction">Sort order</label>
+			<select id="feed-settings-sort-direction">
+				<option value="desc">Newest first</option>
+				<option value="asc">Oldest first</option>
+			</select>
+			<p id="feed-settings-error" class="form-error" role="alert" hidden></p>
+			<div class="dialog-actions">
+				<button type="button" id="cancel-feed-settings-btn" class="button-secondary">Cancel</button>
+				<button type="submit" id="save-feed-settings-btn">Save feed</button>
+			</div>
+		</form>
+	</dialog>
+
+  <dialog id="settings-modal" aria-labelledby="settings-modal-title">
+    <form id="settings-form">
+      <h2 id="settings-modal-title">Settings</h2>
+      <label for="settings-refresh-interval">Refresh interval (minutes)</label>
+      <input id="settings-refresh-interval" type="number" min="1" step="1" required>
+      <label for="settings-max-articles">Maximum articles per feed</label>
+      <input id="settings-max-articles" type="number" min="1" step="1" required>
+	  <label for="settings-display-mode">Default display mode</label>
+      <select id="settings-display-mode">
+        <option value="headline">Headline</option>
+        <option value="headline-blurb">Headline and summary</option>
+        <option value="full">Full content</option>
+      </select>
+	  <label for="settings-sort-order">Default sort order</label>
+      <select id="settings-sort-order">
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
+      <label class="checkbox-row" for="settings-auto-refresh">
+        <input id="settings-auto-refresh" type="checkbox">
+        <span>Refresh feeds automatically</span>
+      </label>
+	  <p id="settings-refresh-result" class="form-result" role="status" aria-live="polite" hidden></p>
+      <p id="settings-form-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+		<button type="button" id="refresh-now-btn" class="button-secondary refresh-now">Refresh now</button>
+        <button type="button" id="cancel-settings-btn" class="button-secondary">Cancel</button>
+        <button type="submit" id="save-settings-btn">Save settings</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="shortcuts-modal" aria-labelledby="shortcuts-modal-title">
+    <div class="shortcuts-dialog">
+      <h2 id="shortcuts-modal-title">Keyboard shortcuts</h2>
+      <dl class="shortcut-list">
+        <div><dt><kbd>J</kbd></dt><dd>Next article</dd></div>
+        <div><dt><kbd>K</kbd></dt><dd>Previous article</dd></div>
+        <div><dt><kbd>N</kbd></dt><dd>Next feed</dd></div>
+        <div><dt><kbd>P</kbd></dt><dd>Previous feed</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>J</kbd></dt><dd>Next group</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>K</kbd></dt><dd>Previous group</dd></div>
+        <div><dt><kbd>V</kbd></dt><dd>Open original</dd></div>
+        <div><dt><kbd>C</kbd></dt><dd>Open comments</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all read</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>Show shortcuts</dd></div>
+      </dl>
+      <div class="dialog-actions">
+        <button type="button" id="close-shortcuts-btn">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
+  <script src="/static/app.js?v=20260816-1"></script>
 </body>
 </html>

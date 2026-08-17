@@ -4,20 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>feedss login</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260816-1">
 </head>
 <body class="login-page">
-  <form class="login-card" method="post" action="/login">
-    <h1>feedss</h1>
-    <label>
-      Username
-      <input name="username" type="text" value="admin" required>
-    </label>
-    <label>
-      Password
-      <input name="password" type="password" value="admin123" required>
-    </label>
-    <button type="submit">Login</button>
-  </form>
+  <main class="login-shell">
+    <a class="login-brand" href="/login">feedss</a>
+    <form class="login-card" method="post" action="/login">
+      <header class="login-heading">
+        <h1>Sign in</h1>
+        <p>Continue to your feeds.</p>
+      </header>
+
+      <div class="login-field">
+        <label for="login-username">Username</label>
+        <input id="login-username" name="username" type="text" autocomplete="username" autofocus required>
+      </div>
+
+      <div class="login-field">
+        <label for="login-password">Password</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+
+      <button class="login-submit" type="submit">Sign in</button>
+    </form>
+  </main>
 </body>
 </html>
