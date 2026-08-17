@@ -279,12 +279,6 @@ function drawBaseIcon(context) {
 	context.beginPath();
 	context.arc(19, 45, 32, -Math.PI / 2, 0);
 	context.stroke();
-	context.strokeStyle = '#b9e3d1';
-	context.lineWidth = 5;
-	context.beginPath();
-	context.moveTo(20, 18);
-	context.lineTo(32, 18);
-	context.stroke();
 }
 
 function updateBrowserUnreadBadge() {
