@@ -32,13 +32,31 @@ func TestAPIModelsUseBrowserFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	jsonText := string(payload)
-	for _, field := range []string{"\"id\"", "\"feed_count\"", "\"unread_count\"", "\"group_id\"", "\"display_mode\"", "\"feed_title\"", "\"comments_link\"", "\"is_read\"", "\"refresh_interval_min\"", "\"auto_refresh_enabled\""} {
+	for _, field := range []string{"\"id\"", "\"feed_count\"", "\"unread_count\"", "\"group_id\"", "\"display_mode\"", "\"feed_title\"", "\"comments_link\"", "\"is_read\"", "\"refresh_interval_min\"", "\"auto_refresh_enabled\"", "\"release_check_enabled\"", "\"release_check_include_prereleases\""} {
 		if !strings.Contains(jsonText, field) {
 			t.Fatalf("expected API JSON to contain %s, got %s", field, jsonText)
 		}
 	}
 	if strings.Contains(jsonText, "\"ID\"") || strings.Contains(jsonText, "\"GroupID\"") {
 		t.Fatalf("API JSON leaked Go field names: %s", jsonText)
+	}
+}
+
+func TestReleaseVersionComparison(t *testing.T) {
+	for _, test := range []struct {
+		left  string
+		right string
+		want  int
+	}{
+		{left: "v0.1.1", right: "v0.1.0", want: 1},
+		{left: "0.1.0", right: "v0.1.0", want: 0},
+		{left: "v0.2.0-beta.1", right: "v0.1.9", want: 1},
+		{left: "v0.1.0", right: "dev", want: 0},
+		{left: "dev", right: "v0.1.0", want: 0},
+	} {
+		if got := compareReleaseVersions(test.left, test.right); got != test.want {
+			t.Fatalf("compareReleaseVersions(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
+		}
 	}
 }
 
@@ -351,6 +369,45 @@ func TestSavingDefaultsDoesNotOverwriteExistingFeedSettings(t *testing.T) {
 	}
 	if displayMode != "headline" || sortDirection != "desc" {
 		t.Fatalf("defaults overwrote existing feed settings: display=%q sort=%q", displayMode, sortDirection)
+	}
+}
+
+func TestReleaseCheckSettingsPersist(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	if err := ensureAppSettings(db); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"refresh_interval_min":              {"15"},
+		"max_articles_per_feed":             {"500"},
+		"default_display_mode":              {"headline"},
+		"default_sort_order":                {"desc"},
+		"auto_refresh_enabled":              {"true"},
+		"release_check_enabled":             {"false"},
+		"release_check_include_prereleases": {"true"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|admin|1"})
+	response := httptest.NewRecorder()
+	app.handleSettingsAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+	settings, err := app.getSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ReleaseCheckEnabled || !settings.ReleaseCheckIncludePrereleases {
+		t.Fatalf("release settings not persisted: %#v", settings)
 	}
 }
 

@@ -34,6 +34,8 @@ var staticFS embed.FS
 const defaultPort = "4317"
 
 const articleFreshnessWindow = 30 * 24 * time.Hour
+const githubReleasesURL = "https://api.github.com/repos/goosepod/feedss/releases"
+const githubProjectReleasesURL = "https://github.com/goosepod/feedss/releases"
 
 var version = "dev"
 
@@ -109,13 +111,32 @@ type App struct {
 
 // AppSettings stores simple, admin-editable runtime defaults.
 type AppSettings struct {
-	ID                 int64  `json:"id"`
-	RefreshIntervalMin int    `json:"refresh_interval_min"`
-	MaxArticlesPerFeed int    `json:"max_articles_per_feed"`
-	DefaultDisplayMode string `json:"default_display_mode"`
-	DefaultSortOrder   string `json:"default_sort_order"`
-	AutoRefreshEnabled bool   `json:"auto_refresh_enabled"`
-	UpdatedAt          string `json:"updated_at"`
+	ID                             int64  `json:"id"`
+	RefreshIntervalMin             int    `json:"refresh_interval_min"`
+	MaxArticlesPerFeed             int    `json:"max_articles_per_feed"`
+	DefaultDisplayMode             string `json:"default_display_mode"`
+	DefaultSortOrder               string `json:"default_sort_order"`
+	AutoRefreshEnabled             bool   `json:"auto_refresh_enabled"`
+	ReleaseCheckEnabled            bool   `json:"release_check_enabled"`
+	ReleaseCheckIncludePrereleases bool   `json:"release_check_include_prereleases"`
+	UpdatedAt                      string `json:"updated_at"`
+}
+
+type GitHubRelease struct {
+	TagName     string `json:"tag_name"`
+	Name        string `json:"name"`
+	HTMLURL     string `json:"html_url"`
+	Prerelease  bool   `json:"prerelease"`
+	Draft       bool   `json:"draft"`
+	PublishedAt string `json:"published_at"`
+}
+
+type ReleaseCheckResult struct {
+	Enabled         bool           `json:"enabled"`
+	UpdateAvailable bool           `json:"update_available"`
+	CurrentVersion  string         `json:"current_version"`
+	Release         *GitHubRelease `json:"release,omitempty"`
+	ReleasesURL     string         `json:"releases_url"`
 }
 
 func main() {
@@ -149,6 +170,7 @@ func main() {
 	mux.HandleFunc("/api/image", app.handleImageProxy)
 	mux.HandleFunc("/api/refresh", app.handleRefreshAPI)
 	mux.HandleFunc("/api/settings", app.handleSettingsAPI)
+	mux.HandleFunc("/api/releases/check", app.handleReleaseCheckAPI)
 	mux.HandleFunc("/api/import-opml", app.handleImportOPML)
 	mux.HandleFunc("/api/export-opml", app.handleExportOPML)
 	staticHandler := http.FileServer(http.FS(staticFS))
@@ -197,6 +219,9 @@ func NewApp(cfg AppConfig) (*App, error) {
 		return nil, err
 	}
 	if err := ensureAdminUser(db); err != nil {
+		return nil, err
+	}
+	if err := ensureAppSettings(db); err != nil {
 		return nil, err
 	}
 
@@ -254,6 +279,8 @@ func initSchema(db *sql.DB) error {
 			default_display_mode TEXT NOT NULL DEFAULT 'headline',
 			default_sort_order TEXT NOT NULL DEFAULT 'desc',
 			auto_refresh_enabled INTEGER NOT NULL DEFAULT 1,
+			release_check_enabled INTEGER NOT NULL DEFAULT 1,
+			release_check_include_prereleases INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_groups_created_by ON groups(created_by, name);`,
@@ -268,35 +295,7 @@ func initSchema(db *sql.DB) error {
 			return fmt.Errorf("schema init: %w", err)
 		}
 	}
-	if err := ensureColumn(db, "articles", "is_read", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func ensureColumn(db *sql.DB, table, column, definition string) error {
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return err
-		}
-		if name == column {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
-	return err
+	return runMigrations(db)
 }
 
 func ensureAdminUser(db *sql.DB) error {
@@ -315,17 +314,23 @@ func ensureAdminUser(db *sql.DB) error {
 	}
 	app.ensureGroup(user.ID, "Inbox")
 	if _, err := db.Exec(
-		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled) VALUES(1, 15, 500, 'headline', 'desc', 1)"); err != nil {
+		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases) VALUES(1, 15, 500, 'headline', 'desc', 1, 1, 0)"); err != nil {
 		return err
 	}
 	return nil
 }
 
+func ensureAppSettings(db *sql.DB) error {
+	_, err := db.Exec(
+		"INSERT OR IGNORE INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases) VALUES(1, 15, 500, 'headline', 'desc', 1, 1, 0)")
+	return err
+}
+
 func (app *App) getSettings() (*AppSettings, error) {
 	var s AppSettings
 	err := app.db.QueryRow(
-		"SELECT id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, updated_at FROM app_settings WHERE id = 1",
-	).Scan(&s.ID, &s.RefreshIntervalMin, &s.MaxArticlesPerFeed, &s.DefaultDisplayMode, &s.DefaultSortOrder, &s.AutoRefreshEnabled, &s.UpdatedAt)
+		"SELECT id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, updated_at FROM app_settings WHERE id = 1",
+	).Scan(&s.ID, &s.RefreshIntervalMin, &s.MaxArticlesPerFeed, &s.DefaultDisplayMode, &s.DefaultSortOrder, &s.AutoRefreshEnabled, &s.ReleaseCheckEnabled, &s.ReleaseCheckIncludePrereleases, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -334,12 +339,14 @@ func (app *App) getSettings() (*AppSettings, error) {
 
 func (app *App) saveSettings(settings AppSettings) error {
 	_, err := app.db.Exec(
-		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, updated_at) VALUES(1, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET refresh_interval_min = excluded.refresh_interval_min, max_articles_per_feed = excluded.max_articles_per_feed, default_display_mode = excluded.default_display_mode, default_sort_order = excluded.default_sort_order, auto_refresh_enabled = excluded.auto_refresh_enabled, updated_at = excluded.updated_at",
+		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, updated_at) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET refresh_interval_min = excluded.refresh_interval_min, max_articles_per_feed = excluded.max_articles_per_feed, default_display_mode = excluded.default_display_mode, default_sort_order = excluded.default_sort_order, auto_refresh_enabled = excluded.auto_refresh_enabled, release_check_enabled = excluded.release_check_enabled, release_check_include_prereleases = excluded.release_check_include_prereleases, updated_at = excluded.updated_at",
 		settings.RefreshIntervalMin,
 		settings.MaxArticlesPerFeed,
 		settings.DefaultDisplayMode,
 		settings.DefaultSortOrder,
 		boolToInt(settings.AutoRefreshEnabled),
+		boolToInt(settings.ReleaseCheckEnabled),
+		boolToInt(settings.ReleaseCheckIncludePrereleases),
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	return err
@@ -1406,7 +1413,7 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		settings, err := app.getSettings()
 		if err != nil {
 			log.Printf("get settings: %v", err)
-			settings = &AppSettings{RefreshIntervalMin: 15, MaxArticlesPerFeed: 500, DefaultDisplayMode: "headline", DefaultSortOrder: "desc", AutoRefreshEnabled: true}
+			settings = defaultAppSettings()
 		}
 		jsonSuccess(w, settings)
 		return
@@ -1426,6 +1433,10 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		DefaultDisplayMode: strings.TrimSpace(r.FormValue("default_display_mode")),
 		DefaultSortOrder:   strings.TrimSpace(r.FormValue("default_sort_order")),
 		AutoRefreshEnabled: strings.EqualFold(strings.TrimSpace(r.FormValue("auto_refresh_enabled")), "true") || r.FormValue("auto_refresh_enabled") == "1",
+		ReleaseCheckEnabled: strings.EqualFold(strings.TrimSpace(r.FormValue("release_check_enabled")), "true") ||
+			r.FormValue("release_check_enabled") == "1",
+		ReleaseCheckIncludePrereleases: strings.EqualFold(strings.TrimSpace(r.FormValue("release_check_include_prereleases")), "true") ||
+			r.FormValue("release_check_include_prereleases") == "1",
 	}
 	if settings.DefaultDisplayMode == "" {
 		settings.DefaultDisplayMode = "headline"
@@ -1445,6 +1456,130 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonSuccess(w, settings)
+}
+
+func defaultAppSettings() *AppSettings {
+	return &AppSettings{
+		RefreshIntervalMin:             15,
+		MaxArticlesPerFeed:             500,
+		DefaultDisplayMode:             "headline",
+		DefaultSortOrder:               "desc",
+		AutoRefreshEnabled:             true,
+		ReleaseCheckEnabled:            true,
+		ReleaseCheckIncludePrereleases: false,
+	}
+}
+
+func (app *App) handleReleaseCheckAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	settings, err := app.getSettings()
+	if err != nil {
+		log.Printf("release check settings: %v", err)
+		settings = defaultAppSettings()
+	}
+	result := ReleaseCheckResult{
+		Enabled:        settings.ReleaseCheckEnabled,
+		CurrentVersion: version,
+		ReleasesURL:    githubProjectReleasesURL,
+	}
+	if !settings.ReleaseCheckEnabled || !isReleaseVersion(version) {
+		jsonSuccess(w, result)
+		return
+	}
+	release, err := latestGitHubRelease(r.Context(), settings.ReleaseCheckIncludePrereleases)
+	if err != nil {
+		log.Printf("release check: %v", err)
+		jsonSuccess(w, result)
+		return
+	}
+	result.Release = release
+	result.UpdateAvailable = compareReleaseVersions(release.TagName, version) > 0
+	jsonSuccess(w, result)
+}
+
+func latestGitHubRelease(ctx context.Context, includePrereleases bool) (*GitHubRelease, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, githubReleasesURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "feedss/"+version)
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("github releases returned %s", response.Status)
+	}
+	var releases []GitHubRelease
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&releases); err != nil {
+		return nil, err
+	}
+	for _, release := range releases {
+		if release.Draft || release.TagName == "" {
+			continue
+		}
+		if release.Prerelease && !includePrereleases {
+			continue
+		}
+		return &release, nil
+	}
+	return nil, errors.New("no matching GitHub release found")
+}
+
+func isReleaseVersion(raw string) bool {
+	_, ok := parseReleaseVersion(raw)
+	return ok
+}
+
+func compareReleaseVersions(left, right string) int {
+	leftParts, leftOK := parseReleaseVersion(left)
+	rightParts, rightOK := parseReleaseVersion(right)
+	if !leftOK || !rightOK {
+		return 0
+	}
+	for i := 0; i < len(leftParts); i++ {
+		if leftParts[i] > rightParts[i] {
+			return 1
+		}
+		if leftParts[i] < rightParts[i] {
+			return -1
+		}
+	}
+	return 0
+}
+
+func parseReleaseVersion(raw string) ([3]int, bool) {
+	var parts [3]int
+	trimmed := strings.TrimPrefix(strings.TrimSpace(raw), "v")
+	if trimmed == "" || strings.EqualFold(trimmed, "dev") {
+		return parts, false
+	}
+	if index := strings.IndexAny(trimmed, "-+"); index >= 0 {
+		trimmed = trimmed[:index]
+	}
+	segments := strings.Split(trimmed, ".")
+	if len(segments) == 0 || len(segments) > len(parts) {
+		return parts, false
+	}
+	for index, segment := range segments {
+		value, err := strconv.Atoi(segment)
+		if err != nil || value < 0 {
+			return parts, false
+		}
+		parts[index] = value
+	}
+	return parts, true
 }
 
 func parseIntOrDefault(raw string, fallback int) int {

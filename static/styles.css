@@ -316,7 +316,8 @@ dialog {
 dialog::backdrop { background: rgba(18, 24, 31, .48); }
 dialog form { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 22px; }
 dialog h2 { margin: 0 0 8px; font-size: 1.35rem; }
-.shortcuts-dialog { padding: 22px; }
+.shortcuts-dialog, .release-dialog { padding: 22px; }
+.release-dialog p { margin: 0; color: var(--muted); }
 .shortcut-list { margin: 14px 0 0; }
 .shortcut-list > div {
   display: grid;

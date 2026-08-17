@@ -119,6 +119,15 @@
         <input id="settings-auto-refresh" type="checkbox">
         <span>Refresh feeds automatically</span>
       </label>
+      <label class="checkbox-row" for="settings-release-check">
+        <input id="settings-release-check" type="checkbox">
+        <span>Check for new feedss releases</span>
+      </label>
+      <label for="settings-release-channel">Release notifications</label>
+      <select id="settings-release-channel">
+        <option value="stable">Full releases only</option>
+        <option value="prerelease">Full releases and pre-releases</option>
+      </select>
 	  <p id="settings-refresh-result" class="form-result" role="status" aria-live="polite" hidden></p>
       <p id="settings-form-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">
@@ -150,7 +159,18 @@
     </div>
   </dialog>
 
+  <dialog id="release-modal" aria-labelledby="release-modal-title">
+    <div class="release-dialog">
+      <h2 id="release-modal-title">Update available</h2>
+      <p id="release-modal-summary"></p>
+      <div class="dialog-actions">
+        <button type="button" id="dismiss-release-btn" class="button-secondary">Not now</button>
+        <a id="release-modal-link" class="button" href="https://github.com/goosepod/feedss/releases" target="_blank" rel="noopener">View release</a>
+      </div>
+    </div>
+  </dialog>
+
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260816-1"></script>
+  <script src="/static/app.js?v=20260816-2"></script>
 </body>
 </html>

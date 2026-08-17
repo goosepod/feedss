@@ -12,6 +12,8 @@ const state = {
   viewMode: 'group',
 	defaultDisplayMode: 'headline',
 	defaultSortOrder: 'desc',
+	releaseCheckEnabled: true,
+	releaseCheckIncludePrereleases: false,
 	selectedArticleIndex: -1,
   articleRequest: 0,
   expandedGroupIds: new Set(),
@@ -61,6 +63,10 @@ function applySettings(settings) {
   elements.settingsDisplay.value = settings.default_display_mode || 'headline';
   elements.settingsSort.value = settings.default_sort_order || 'desc';
   elements.settingsAuto.checked = Boolean(settings.auto_refresh_enabled);
+	state.releaseCheckEnabled = Boolean(settings.release_check_enabled);
+	state.releaseCheckIncludePrereleases = Boolean(settings.release_check_include_prereleases);
+	elements.settingsReleaseCheck.checked = state.releaseCheckEnabled;
+	elements.settingsReleaseChannel.value = state.releaseCheckIncludePrereleases ? 'prerelease' : 'stable';
 }
 
 async function loadGroups() {
@@ -647,6 +653,8 @@ async function saveSettings() {
     default_display_mode: elements.settingsDisplay.value,
     default_sort_order: elements.settingsSort.value,
     auto_refresh_enabled: elements.settingsAuto.checked ? 'true' : 'false',
+	release_check_enabled: elements.settingsReleaseCheck.checked ? 'true' : 'false',
+	release_check_include_prereleases: elements.settingsReleaseChannel.value === 'prerelease' ? 'true' : 'false',
   });
   try {
 		const settings = await fetchJson('/api/settings', {
@@ -661,6 +669,27 @@ async function saveSettings() {
   } finally {
     elements.saveSettings.disabled = false;
   }
+}
+
+async function checkForNewRelease() {
+	if (!state.releaseCheckEnabled) return;
+	try {
+		const result = await fetchJson('/api/releases/check');
+		if (!result?.enabled || !result.update_available || !result.release) return;
+		showReleaseModal(result);
+	} catch {
+		// Release checks should never interrupt reading feeds.
+	}
+}
+
+function showReleaseModal(result) {
+	const release = result.release;
+	const releaseName = release.name || release.tag_name;
+	elements.releaseSummary.textContent = `You are running ${result.current_version}. ${releaseName} is available.`;
+	elements.releaseLink.href = release.html_url || result.releases_url || 'https://github.com/goosepod/feedss/releases';
+	if (!document.querySelector('dialog[open]')) {
+		elements.releaseModal.showModal();
+	}
 }
 
 async function refreshNow() {
@@ -785,11 +814,14 @@ function cacheElements() {
 	saveFeedSettings: document.getElementById('save-feed-settings-btn'),
     settingsModal: document.getElementById('settings-modal'), settingsForm: document.getElementById('settings-form'),
     settingsRefresh: document.getElementById('settings-refresh-interval'), settingsMax: document.getElementById('settings-max-articles'),
-    settingsDisplay: document.getElementById('settings-display-mode'), settingsSort: document.getElementById('settings-sort-order'),
+	settingsDisplay: document.getElementById('settings-display-mode'), settingsSort: document.getElementById('settings-sort-order'),
 	settingsAuto: document.getElementById('settings-auto-refresh'), settingsFormError: document.getElementById('settings-form-error'),
+	settingsReleaseCheck: document.getElementById('settings-release-check'), settingsReleaseChannel: document.getElementById('settings-release-channel'),
 	settingsRefreshResult: document.getElementById('settings-refresh-result'), refreshNow: document.getElementById('refresh-now-btn'),
 	saveSettings: document.getElementById('save-settings-btn'), opmlInput: document.getElementById('opml-file-input'),
 	shortcutsModal: document.getElementById('shortcuts-modal'),
+	releaseModal: document.getElementById('release-modal'), releaseSummary: document.getElementById('release-modal-summary'),
+	releaseLink: document.getElementById('release-modal-link'),
   });
 }
 
@@ -819,6 +851,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   elements.settingsForm.addEventListener('submit', event => { event.preventDefault(); saveSettings(); });
 	elements.refreshNow.addEventListener('click', refreshNow);
 	document.getElementById('close-shortcuts-btn').addEventListener('click', () => elements.shortcutsModal.close());
+	document.getElementById('dismiss-release-btn').addEventListener('click', () => elements.releaseModal.close());
   document.getElementById('import-btn').addEventListener('click', () => {
     elements.opmlInput.value = '';
     elements.opmlInput.click();
@@ -838,4 +871,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   } catch (error) {
     setStatus(`Could not load feeds: ${error.message}`, 'error');
   }
+	checkForNewRelease();
 });

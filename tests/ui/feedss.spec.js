@@ -63,6 +63,14 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		return route.fulfill({ json: { articles: matching.slice(offset, offset + limit), total: matching.length } });
 	});
 	await page.route('**/api/feeds/update', route => route.fulfill({ json: { status: 'ok' } }));
+	await page.route('**/api/releases/check', route => route.fulfill({
+		json: {
+			enabled: true,
+			update_available: false,
+			current_version: 'dev',
+			releases_url: 'https://github.com/goosepod/feedss/releases',
+		},
+	}));
 	await page.route('**/api/articles/read', route => {
 		const params = new URLSearchParams(route.request().postData() || '');
 		const articleID = Number(params.get('article_id'));
@@ -160,9 +168,11 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
   await expect(settingsDialog).toBeVisible();
-  await expect(page.getByLabel('Refresh interval (minutes)')).not.toHaveValue('');
+	await expect(page.getByLabel('Refresh interval (minutes)')).not.toHaveValue('');
 	await expect(page.getByLabel('Maximum articles per feed')).toHaveAttribute('step', '1');
 	expect(await page.getByLabel('Maximum articles per feed').evaluate(input => input.checkValidity())).toBe(true);
+	await expect(page.getByLabel('Check for new feedss releases')).toBeChecked();
+	await settingsDialog.getByLabel('Release notifications').selectOption('prerelease');
 	await settingsDialog.getByRole('button', { name: 'Refresh now', exact: true }).click();
 	await expect(settingsDialog.getByRole('status')).toHaveText('Updated 2 feeds.');
 	await settingsDialog.getByLabel('Default display mode').selectOption('full');
