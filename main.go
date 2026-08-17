@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -104,9 +105,17 @@ type ArticlePage struct {
 
 // App stores runtime state.
 type App struct {
-	db     *sql.DB
-	config AppConfig
-	tmpl   *template.Template
+	db           *sql.DB
+	config       AppConfig
+	tmpl         *template.Template
+	faviconMu    sync.RWMutex
+	faviconCache map[string]cachedFavicon
+}
+
+type cachedFavicon struct {
+	data        []byte
+	contentType string
+	expiresAt   time.Time
 }
 
 // AppSettings stores simple, admin-editable runtime defaults.
@@ -168,6 +177,7 @@ func main() {
 	mux.HandleFunc("/api/articles", app.handleArticlesAPI)
 	mux.HandleFunc("/api/articles/read", app.handleArticleReadAPI)
 	mux.HandleFunc("/api/image", app.handleImageProxy)
+	mux.HandleFunc("/api/favicon", app.handleFaviconProxy)
 	mux.HandleFunc("/api/refresh", app.handleRefreshAPI)
 	mux.HandleFunc("/api/settings", app.handleSettingsAPI)
 	mux.HandleFunc("/api/releases/check", app.handleReleaseCheckAPI)
@@ -226,7 +236,7 @@ func NewApp(cfg AppConfig) (*App, error) {
 	}
 
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
-	return &App{db: db, config: cfg, tmpl: tmpl}, nil
+	return &App{db: db, config: cfg, tmpl: tmpl, faviconCache: make(map[string]cachedFavicon)}, nil
 }
 
 func initSchema(db *sql.DB) error {
@@ -1092,6 +1102,9 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 const maxProxiedImageBytes = 12 << 20
+const maxFaviconPageBytes = 2 << 20
+const maxCachedFavicons = 256
+const faviconCacheTTL = 24 * time.Hour
 
 func isBlockedImageIP(ip net.IP) bool {
 	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
@@ -1169,56 +1182,209 @@ func imageProxyClient() *http.Client {
 	}
 }
 
-func (app *App) handleImageProxy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	remoteURL, err := parseRemoteImageURL(r.URL.Query().Get("url"))
+func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, string, error) {
+	remoteURL, err := parseRemoteImageURL(rawURL)
 	if err != nil {
-		http.Error(w, "invalid image URL", http.StatusBadRequest)
-		return
+		return nil, "", err
 	}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, remoteURL.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL.String(), nil)
 	if err != nil {
-		http.Error(w, "invalid image request", http.StatusBadRequest)
-		return
+		return nil, "", err
 	}
 	request.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8")
 	request.Header.Set("User-Agent", "feedss/1.0")
 	response, err := imageProxyClient().Do(request)
 	if err != nil {
 		log.Printf("image proxy %s: %v", remoteURL.Hostname(), err)
-		http.Error(w, "image unavailable", http.StatusBadGateway)
-		return
+		return nil, "", err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		http.Error(w, "image host returned an error", http.StatusBadGateway)
-		return
+		return nil, "", fmt.Errorf("image host returned %s", response.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxProxiedImageBytes+1))
 	if err != nil {
-		http.Error(w, "failed to read image", http.StatusBadGateway)
-		return
+		return nil, "", err
 	}
 	if len(data) > maxProxiedImageBytes {
-		http.Error(w, "image is too large", http.StatusRequestEntityTooLarge)
-		return
+		return nil, "", errors.New("image is too large")
 	}
 	contentType := response.Header.Get("Content-Type")
 	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		contentType = http.DetectContentType(data)
 	}
 	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
-		http.Error(w, "remote content is not an image", http.StatusUnsupportedMediaType)
-		return
+		return nil, "", errors.New("remote content is not an image")
 	}
+	return data, contentType, nil
+}
+
+func writeProxiedImage(w http.ResponseWriter, data []byte, contentType string) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func proxyRemoteImage(w http.ResponseWriter, r *http.Request, rawURL string) {
+	if _, err := parseRemoteImageURL(rawURL); err != nil {
+		http.Error(w, "invalid image URL", http.StatusBadRequest)
+		return
+	}
+	data, contentType, err := fetchRemoteImage(r.Context(), rawURL)
+	if err != nil {
+		http.Error(w, "image unavailable", http.StatusBadGateway)
+		return
+	}
+	writeProxiedImage(w, data, contentType)
+}
+
+func (app *App) handleImageProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	proxyRemoteImage(w, r, r.URL.Query().Get("url"))
+}
+
+func discoverFaviconURL(siteURL *url.URL, document io.Reader) string {
+	root, err := html.Parse(io.LimitReader(document, maxFaviconPageBytes))
+	if err != nil {
+		return ""
+	}
+	var fallback string
+	var visit func(*html.Node) string
+	visit = func(node *html.Node) string {
+		if node.Type == html.ElementNode && node.Data == "link" {
+			var href string
+			var relTokens []string
+			for _, attribute := range node.Attr {
+				switch strings.ToLower(attribute.Key) {
+				case "href":
+					href = strings.TrimSpace(attribute.Val)
+				case "rel":
+					relTokens = strings.Fields(strings.ToLower(attribute.Val))
+				}
+			}
+			if href != "" {
+				for _, token := range relTokens {
+					if token != "icon" && token != "shortcut" && token != "apple-touch-icon" {
+						continue
+					}
+					candidate, err := siteURL.Parse(href)
+					if err != nil {
+						continue
+					}
+					if _, err := parseRemoteImageURL(candidate.String()); err != nil {
+						continue
+					}
+					if token == "icon" {
+						return candidate.String()
+					}
+					if fallback == "" {
+						fallback = candidate.String()
+					}
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if found := visit(child); found != "" {
+				return found
+			}
+		}
+		return ""
+	}
+	if faviconURL := visit(root); faviconURL != "" {
+		return faviconURL
+	}
+	return fallback
+}
+
+func (app *App) loadCachedFavicon(key string) (cachedFavicon, bool) {
+	app.faviconMu.RLock()
+	cached, ok := app.faviconCache[key]
+	app.faviconMu.RUnlock()
+	if !ok || time.Now().After(cached.expiresAt) {
+		if ok {
+			app.faviconMu.Lock()
+			if current, exists := app.faviconCache[key]; exists && time.Now().After(current.expiresAt) {
+				delete(app.faviconCache, key)
+			}
+			app.faviconMu.Unlock()
+		}
+		return cachedFavicon{}, false
+	}
+	return cached, true
+}
+
+func (app *App) storeCachedFavicon(key string, favicon cachedFavicon) {
+	app.faviconMu.Lock()
+	defer app.faviconMu.Unlock()
+	if app.faviconCache == nil {
+		app.faviconCache = make(map[string]cachedFavicon)
+	}
+	_, replacing := app.faviconCache[key]
+	if !replacing && len(app.faviconCache) >= maxCachedFavicons {
+		var oldestKey string
+		var oldestExpiry time.Time
+		for existingKey, existing := range app.faviconCache {
+			if oldestKey == "" || existing.expiresAt.Before(oldestExpiry) {
+				oldestKey = existingKey
+				oldestExpiry = existing.expiresAt
+			}
+		}
+		delete(app.faviconCache, oldestKey)
+	}
+	app.faviconCache[key] = favicon
+}
+
+func (app *App) handleFaviconProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	siteURL, err := parseRemoteImageURL(r.URL.Query().Get("url"))
+	if err != nil {
+		http.Error(w, "invalid site URL", http.StatusBadRequest)
+		return
+	}
+	siteURL.Path = "/"
+	siteURL.RawPath = ""
+	siteURL.RawQuery = ""
+	siteURL.Fragment = ""
+	cacheKey := siteURL.String()
+	if cached, ok := app.loadCachedFavicon(cacheKey); ok {
+		writeProxiedImage(w, cached.data, cached.contentType)
+		return
+	}
+	var faviconURL string
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, siteURL.String(), nil)
+	if err == nil {
+		request.Header.Set("Accept", "text/html,application/xhtml+xml")
+		request.Header.Set("User-Agent", "feedss/1.0")
+		response, requestErr := imageProxyClient().Do(request)
+		if requestErr == nil {
+			defer response.Body.Close()
+			if response.StatusCode >= 200 && response.StatusCode < 300 {
+				faviconURL = discoverFaviconURL(siteURL, response.Body)
+			}
+		}
+	}
+	if faviconURL == "" {
+		fallback := *siteURL
+		fallback.Path = "/favicon.ico"
+		faviconURL = fallback.String()
+	}
+	data, contentType, err := fetchRemoteImage(r.Context(), faviconURL)
+	if err != nil {
+		http.Error(w, "favicon unavailable", http.StatusBadGateway)
+		return
+	}
+	app.storeCachedFavicon(cacheKey, cachedFavicon{
+		data: data, contentType: contentType, expiresAt: time.Now().Add(faviconCacheTTL),
+	})
+	writeProxiedImage(w, data, contentType)
 }
 
 func (app *App) handleRefreshAPI(w http.ResponseWriter, r *http.Request) {

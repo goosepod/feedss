@@ -83,6 +83,33 @@ func TestImageProxyAddressValidation(t *testing.T) {
 	}
 }
 
+func TestDiscoverFaviconURL(t *testing.T) {
+	siteURL, err := url.Parse("https://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := `<html><head><link rel="icon" type="image/png" href="/assets/site-icon.png"></head></html>`
+	got := discoverFaviconURL(siteURL, strings.NewReader(document))
+	if got != "https://example.com/assets/site-icon.png" {
+		t.Fatalf("unexpected favicon URL: %q", got)
+	}
+}
+
+func TestFaviconCache(t *testing.T) {
+	app := &App{}
+	app.storeCachedFavicon("https://example.com/", cachedFavicon{
+		data: []byte("icon"), contentType: "image/png", expiresAt: time.Now().Add(time.Hour),
+	})
+	cached, ok := app.loadCachedFavicon("https://example.com/")
+	if !ok || string(cached.data) != "icon" || cached.contentType != "image/png" {
+		t.Fatalf("unexpected cached favicon: ok=%v value=%#v", ok, cached)
+	}
+	app.storeCachedFavicon("https://expired.example/", cachedFavicon{expiresAt: time.Now().Add(-time.Second)})
+	if _, ok := app.loadCachedFavicon("https://expired.example/"); ok {
+		t.Fatal("expected expired favicon to be evicted")
+	}
+}
+
 func TestCollectOPMLURLsUsesParentAsGroup(t *testing.T) {
 	outline := opmlOutline{
 		Text: "Technology",

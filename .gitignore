@@ -30,6 +30,7 @@ bin/
 
 # Editor / OS files
 .vscode/
+*.code-workspace
 .DS_Store
 Thumbs.db
 

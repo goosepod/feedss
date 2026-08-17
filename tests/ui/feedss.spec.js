@@ -17,6 +17,30 @@ async function login(page) {
   await expect(page.locator('#feed-header')).toBeVisible();
 }
 
+async function expectSelectedArticleToKeepTopPadding(page) {
+	await expect.poll(async () => {
+		const articleBox = await page.locator('.article.selected').boundingBox();
+		const pane = page.locator('#article-pane');
+		const paneBox = await pane.boundingBox();
+		const articleGap = await page.locator('.article').nth(1).evaluate(element => parseFloat(getComputedStyle(element).marginTop));
+		return Math.abs((articleBox.y - paneBox.y) - articleGap);
+	}).toBeLessThan(3);
+	const mask = await page.locator('#article-pane').evaluate(element => {
+		const style = getComputedStyle(element, '::before');
+		return {
+			height: parseFloat(style.height),
+			paddingTop: parseFloat(getComputedStyle(element).paddingTop),
+			position: style.position,
+			top: parseFloat(style.top),
+			zIndex: style.zIndex,
+		};
+	});
+	expect(mask.height).toBe(10);
+	expect(mask.position).toBe('sticky');
+	expect(mask.top).toBe(-mask.paddingTop);
+	expect(Number(mask.zIndex)).toBeGreaterThan(0);
+}
+
 test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const groups = [
 		{ id: 1, name: 'Programming', feed_count: 2, unread_count: 119 },
@@ -29,10 +53,10 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		id: 110 + index, name: `Placeholder ${index + 11}`, feed_count: 0, unread_count: 0,
 	})));
 	const feeds = [
-		{ id: 11, group_id: 1, title: 'Hacker News', display_mode: 'headline', sort_direction: 'desc', unread_count: 79 },
-		{ id: 12, group_id: 1, title: 'Lobsters', display_mode: 'headline', sort_direction: 'desc', unread_count: 40 },
-		{ id: 21, group_id: 2, title: 'Board Game Quest', display_mode: 'headline', sort_direction: 'desc', unread_count: 1 },
-		{ id: 501, group_id: 50, title: 'Scroll test feed', display_mode: 'headline', sort_direction: 'desc', unread_count: 0 },
+		{ id: 11, group_id: 1, title: 'Hacker News', url: 'https://news.ycombinator.com/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 79 },
+		{ id: 12, group_id: 1, title: 'Lobsters', url: 'https://lobste.rs/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 40 },
+		{ id: 21, group_id: 2, title: 'Board Game Quest', url: 'https://www.boardgamequest.com/feed/', display_mode: 'headline', sort_direction: 'desc', unread_count: 1 },
+		{ id: 501, group_id: 50, title: 'Scroll test feed', url: 'https://example.com/feed.xml', display_mode: 'headline', sort_direction: 'desc', unread_count: 0 },
 	];
 	const programmingArticles = Array.from({ length: 120 }, (_, index) => index + 1).map(id => ({
 		id, feed_id: id % 3 === 0 ? 12 : 11, feed_title: id % 3 === 0 ? 'Lobsters' : 'Hacker News', title: `Example article ${id}`,
@@ -45,6 +69,10 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		{ id: 202, feed_id: 21, feed_title: 'Board Game Quest', title: 'Second short article', link: 'https://example.com/202', description: '<p>Second summary.</p><img src="https://images.example.com/second.png" alt="Second article image">', published_at: '2026-08-16T11:00:00Z', is_read: false },
 	]);
 	await page.route('**/api/image?url=**', route => route.fulfill({
+		contentType: 'image/png',
+		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+	}));
+	await page.route('**/api/favicon?url=**', route => route.fulfill({
 		contentType: 'image/png',
 		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
 	}));
@@ -91,8 +119,12 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
   await login(page);
 
   await expect(page.getByRole('link', { name: 'feedss', exact: true })).toBeVisible();
-	await expect(page).toHaveTitle('(121) feedss');
+	await expect(page.locator('.brand-icon')).toHaveAttribute('src', '/static/favicon.svg');
+	await expect(page).toHaveTitle('feedss');
 	await expect.poll(() => page.locator('link[rel="icon"]').getAttribute('type')).toBe('image/png');
+	await expect(page.locator('link[rel="icon"]')).toHaveAttribute('sizes', '64x64');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(483))).toBe('483');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(4_832))).toBe('4k');
   await expect(page.getByRole('button', { name: 'Add feed', exact: true })).toBeVisible();
 	await page.keyboard.press('?');
 	const shortcutsDialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
@@ -137,29 +169,32 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 
 	const articleRows = page.locator('.article');
 	await expect(articleRows).toHaveCount(30);
+	await expect(articleRows.first().locator('.article-site-icon')).toHaveAttribute('src', /\/api\/favicon\?url=https%3A%2F%2Fnews\.ycombinator\.com/);
+	const firstHeadline = articleRows.first().locator('.article-title');
+	await expect(firstHeadline).toHaveAttribute('href', 'https://example.com/2');
+	await expect(firstHeadline).toHaveAttribute('target', '_blank');
+	const firstTitleBox = await firstHeadline.boundingBox();
+	const firstMetaBox = await articleRows.first().locator('.article-meta').boundingBox();
+	expect(firstMetaBox.y).toBeGreaterThan(firstTitleBox.y + firstTitleBox.height - 1);
+	const [headlinePage] = await Promise.all([
+		page.waitForEvent('popup'),
+		firstHeadline.click(),
+	]);
+	await expect(headlinePage).toHaveURL('https://example.com/2');
+	await headlinePage.close();
+	await expect(page.locator('.article.selected')).toHaveCount(0);
 	await expect(page.locator('#article-count')).toHaveText('120 articles');
 	await page.keyboard.press('j');
 	await expect(page.locator('.article.selected')).toHaveAttribute('data-article-id', '2');
 	await expect(page.locator('.article.selected')).toHaveClass(/read/);
-	await expect.poll(async () => {
-		const articleBox = await page.locator('.article.selected').boundingBox();
-		const paneBox = await page.locator('#article-pane').boundingBox();
-		return Math.abs(articleBox.y - paneBox.y);
-	}).toBeLessThan(3);
+	await expectSelectedArticleToKeepTopPadding(page);
 	for (let index = 0; index < 5; index += 1) await page.keyboard.press('j');
 	await expect(page.locator('.article.selected')).toHaveAttribute('data-article-id', '7');
-	await expect.poll(async () => {
-		const articleBox = await page.locator('.article.selected').boundingBox();
-		const paneBox = await page.locator('#article-pane').boundingBox();
-		return Math.abs(articleBox.y - paneBox.y);
-	}).toBeLessThan(3);
+	await expectSelectedArticleToKeepTopPadding(page);
 	await page.locator('[data-article-id="10"]').click({ position: { x: 8, y: 8 } });
 	await expect(page.locator('.article.selected')).toHaveAttribute('data-article-id', '10');
-	await expect.poll(async () => {
-		const articleBox = await page.locator('.article.selected').boundingBox();
-		const paneBox = await page.locator('#article-pane').boundingBox();
-		return Math.abs(articleBox.y - paneBox.y);
-	}).toBeLessThan(3);
+	await expectSelectedArticleToKeepTopPadding(page);
+	await page.screenshot({ path: testInfo.outputPath(`feedss-top-inset-${testInfo.project.name}.png`) });
 
   await page.getByRole('button', { name: 'Add feed', exact: true }).click();
   const addDialog = page.getByRole('dialog', { name: 'Add feed' });
@@ -181,6 +216,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await settingsDialog.getByLabel('Default display mode').selectOption('full');
 	await settingsDialog.getByRole('button', { name: 'Save settings', exact: true }).click();
 	await expect(settingsDialog).toBeHidden();
+	await expect(page.locator('#status-message')).toHaveText('Settings saved.');
+	await page.getByRole('button', { name: 'Dismiss notification', exact: true }).click();
+	await expect(page.locator('#status')).toBeHidden();
 
 	await expect(articleRows).toHaveCount(30);
 	await expect(page.locator('.article-content')).toHaveCount(30);
@@ -226,10 +264,8 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await page.keyboard.press('j');
 	await page.keyboard.press('j');
 	await expect(page.locator('.article.selected')).toHaveAttribute('data-article-id', '202');
-	const selectedBox = await page.locator('.article.selected').boundingBox();
-	const articlePaneBox = await page.locator('#article-pane').boundingBox();
-	expect(Math.abs(selectedBox.y - articlePaneBox.y)).toBeLessThan(3);
-	const selectedImage = page.locator('.article.selected img');
+	await expectSelectedArticleToKeepTopPadding(page);
+	const selectedImage = page.locator('.article.selected .article-body img');
 	await expect(selectedImage).toHaveAttribute('loading', 'eager');
 	await expect.poll(() => selectedImage.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
 

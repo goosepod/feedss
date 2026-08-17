@@ -25,7 +25,7 @@ const state = {
 const elements = {};
 
 function setStatus(message = '', type = 'info') {
-  elements.status.textContent = message;
+  elements.statusMessage.textContent = message;
   elements.status.className = `status${type === 'error' ? ' error' : ''}`;
   elements.status.hidden = !message;
 }
@@ -242,9 +242,10 @@ function totalUnreadCount() {
 	return state.groups.reduce((sum, group) => sum + (Number(group.unread_count) || 0), 0);
 }
 
-function formatBadgeCount(count) {
-	if (count > 99) return '99+';
-	return String(count);
+function formatFaviconUnreadCount(count) {
+	if (count < 1000) return String(count);
+	if (count < 1_000_000) return `${Math.floor(count / 1000)}k`;
+	return `${Math.floor(count / 1_000_000)}m`;
 }
 
 function roundedRectPath(context, x, y, width, height, radius) {
@@ -261,34 +262,15 @@ function roundedRectPath(context, x, y, width, height, radius) {
 	context.closePath();
 }
 
-function drawBaseIcon(context) {
-	context.clearRect(0, 0, 64, 64);
-	roundedRectPath(context, 0, 0, 64, 64, 14);
-	context.fillStyle = '#176b4d';
-	context.fill();
-	context.fillStyle = '#ffffff';
-	context.beginPath();
-	context.arc(22, 42, 5, 0, Math.PI * 2);
-	context.fill();
-	context.strokeStyle = '#ffffff';
-	context.lineCap = 'round';
-	context.lineWidth = 6;
-	context.beginPath();
-	context.arc(19, 45, 20, -Math.PI / 2, 0);
-	context.stroke();
-	context.beginPath();
-	context.arc(19, 45, 32, -Math.PI / 2, 0);
-	context.stroke();
-}
-
 function updateBrowserUnreadBadge() {
 	const unread = totalUnreadCount();
-	document.title = unread > 0 ? `(${unread}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
+	document.title = DEFAULT_TITLE;
 	const favicon = elements.favicon || document.getElementById('favicon');
 	if (!favicon) return;
 	if (unread <= 0) {
-		favicon.href = STATIC_FAVICON;
 		favicon.type = 'image/svg+xml';
+		favicon.removeAttribute('sizes');
+		favicon.href = STATIC_FAVICON;
 		return;
 	}
 	const canvas = document.createElement('canvas');
@@ -296,21 +278,20 @@ function updateBrowserUnreadBadge() {
 	canvas.height = 64;
 	const context = canvas.getContext('2d');
 	if (!context) return;
-	drawBaseIcon(context);
-	context.fillStyle = '#b42318';
-	context.beginPath();
-	context.arc(47, 17, 15, 0, Math.PI * 2);
+	context.clearRect(0, 0, 64, 64);
+	roundedRectPath(context, 1, 1, 62, 62, 13);
+	context.fillStyle = '#176b4d';
 	context.fill();
-	context.strokeStyle = '#ffffff';
-	context.lineWidth = 3;
-	context.stroke();
+	const badgeText = formatFaviconUnreadCount(unread);
+	const fontSize = badgeText.length <= 1 ? 40 : (badgeText.length === 2 ? 34 : (badgeText.length === 3 ? 27 : 22));
 	context.fillStyle = '#ffffff';
-	context.font = unread > 99 ? '700 12px system-ui, sans-serif' : '700 16px system-ui, sans-serif';
+	context.font = `800 ${fontSize}px Arial, sans-serif`;
 	context.textAlign = 'center';
 	context.textBaseline = 'middle';
-	context.fillText(formatBadgeCount(unread), 47, 17);
-	favicon.href = canvas.toDataURL('image/png');
+	context.fillText(badgeText, 32, 34);
 	favicon.type = 'image/png';
+	favicon.sizes = '64x64';
+	favicon.href = canvas.toDataURL('image/png');
 }
 
 function selectGroup(groupID) {
@@ -359,6 +340,30 @@ function safeExternalURL(rawURL) {
 function proxiedImageURL(rawURL) {
 	const url = safeExternalURL(rawURL);
 	return url ? `/api/image?url=${encodeURIComponent(url)}` : '';
+}
+
+function siteFaviconURL(rawURL) {
+	const url = safeExternalURL(rawURL);
+	if (!url) return '';
+	try {
+		const siteURL = new URL(url);
+		return `/api/favicon?url=${encodeURIComponent(siteURL.origin)}`;
+	} catch {
+		return '';
+	}
+}
+
+function createSiteIcon(article) {
+	const feed = state.feeds.find(item => item.id === article.feed_id);
+	const faviconURL = siteFaviconURL(feed?.url || article.link);
+	if (!faviconURL) return null;
+	const icon = document.createElement('img');
+	icon.className = 'article-site-icon';
+	icon.src = faviconURL;
+	icon.alt = '';
+	icon.loading = 'lazy';
+	icon.addEventListener('error', () => icon.remove(), { once: true });
+	return icon;
 }
 
 function sanitizeHTML(rawHTML) {
@@ -482,20 +487,31 @@ function renderArticles() {
     articleElement.className = `article${article.is_read ? ' read' : ' unread'}${index === state.selectedArticleIndex ? ' selected' : ''}`;
     articleElement.dataset.articleId = String(article.id);
 
-    const header = document.createElement('button');
-    header.type = 'button';
+    const header = document.createElement('div');
     header.className = 'article-header';
     header.setAttribute('aria-expanded', String(expanded));
-    const title = document.createElement('span');
+    const articleURL = safeExternalURL(article.link);
+    const title = document.createElement(articleURL ? 'a' : 'span');
     title.className = 'article-title';
     title.textContent = article.title || 'Untitled article';
+		if (articleURL) {
+			title.href = articleURL;
+			title.target = '_blank';
+			title.rel = 'noopener noreferrer';
+		}
     const meta = document.createElement('span');
     meta.className = 'article-meta';
     const date = article.published_at ? new Date(article.published_at) : null;
 		const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
-		meta.textContent = state.viewMode === 'group'
+		const metaText = document.createElement('span');
+		metaText.textContent = state.viewMode === 'group'
 			? [article.feed_title, dateText].filter(Boolean).join(' - ')
 			: (dateText || article.feed_title || feed.title);
+		if (state.viewMode === 'group' && article.feed_title) {
+			const siteIcon = createSiteIcon(article);
+			if (siteIcon) meta.appendChild(siteIcon);
+		}
+		meta.appendChild(metaText);
     header.append(title, meta);
     articleElement.appendChild(header);
 
@@ -879,6 +895,7 @@ function bindKeyboard() {
 function cacheElements() {
   Object.assign(elements, {
 	status: document.getElementById('status'), subscriptionList: document.getElementById('subscription-list'),
+	statusMessage: document.getElementById('status-message'),
 	favicon: document.getElementById('favicon'),
 	readerLabel: document.getElementById('reader-label'), feedHeader: document.getElementById('feed-header'),
 	articlePane: document.getElementById('article-pane'), articleCount: document.getElementById('article-count'),
@@ -907,6 +924,7 @@ function cacheElements() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   cacheElements();
+  document.getElementById('dismiss-status-btn').addEventListener('click', () => setStatus());
   document.getElementById('add-feed-btn').addEventListener('click', () => {
     setFormError(elements.feedFormError);
     elements.feedModal.showModal();

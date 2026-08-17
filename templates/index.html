@@ -5,12 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>feedss</title>
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20260816-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20260817-4">
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
-      <a class="brand" href="/">feedss</a>
+      <a class="brand" href="/">
+        <img class="brand-icon" src="/static/favicon.svg" alt="">
+        <span>feedss</span>
+      </a>
       <nav class="app-actions" aria-label="Account and feed actions">
         <button id="import-btn" class="button-secondary" type="button">Import</button>
         <button id="export-btn" class="button-secondary" type="button">Export</button>
@@ -20,7 +23,10 @@
       </nav>
     </header>
 
-    <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+    <div id="status" class="status" role="status" aria-live="polite" hidden>
+      <span id="status-message"></span>
+      <button id="dismiss-status-btn" class="status-dismiss" type="button" aria-label="Dismiss notification">&times;</button>
+    </div>
 
     <div class="app-content">
       <aside class="sidebar" aria-label="Feed navigation">
@@ -172,6 +178,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260816-3"></script>
+  <script src="/static/app.js?v=20260817-6"></script>
 </body>
 </html>
