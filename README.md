@@ -2,6 +2,8 @@
 
 feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, manual refresh, release notifications, and a local SQLite database.
 
+See the [changelog](CHANGELOG.md) for release history.
+
 It is designed for a trusted home-lab, desktop, LAN, or Tailscale-style environment rather than public multi-tenant hosting.
 
 ## Quick Start
