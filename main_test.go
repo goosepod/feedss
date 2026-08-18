@@ -180,6 +180,25 @@ func TestArticleTitleFallsBackToDescriptionText(t *testing.T) {
 	}
 }
 
+func TestArticleTitleNormalizesEntitiesAndInlineMarkup(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{name: "double encoded entity", title: "Claude&amp;#8217;s invisible watermark", want: "Claude’s invisible watermark"},
+		{name: "inline formatting", title: "<b>Breaking</b>: <i>Important news</i>", want: "Breaking: Important news"},
+		{name: "encoded inline formatting", title: "&lt;b&gt;Bold&lt;/b&gt; and &lt;i&gt;italic&lt;/i&gt;", want: "Bold and italic"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := articleTitle(&gofeed.Item{Title: test.title}); got != test.want {
+				t.Fatalf("articleTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestExtractCommentsLinkFromArticleHTML(t *testing.T) {
 	item := &gofeed.Item{
 		Description: `<a href="https://news.ycombinator.com/item?id=12345">Comments</a>`,
@@ -211,7 +230,7 @@ func TestStoredArticleMaintenanceBackfillsCommentsAndPrunesStaleRows(t *testing.
 	}
 	feedID, _ := result.LastInsertId()
 	commentsHTML := `<a href="https://news.ycombinator.com/item?id=99">Comments</a>`
-	if _, err := db.Exec("INSERT INTO articles(feed_id, title, description, published_at, guid) VALUES(?, ?, ?, ?, ?)", feedID, "Recent", commentsHTML, time.Now().UTC().Format(time.RFC3339), "recent"); err != nil {
+	if _, err := db.Exec("INSERT INTO articles(feed_id, title, description, published_at, guid) VALUES(?, ?, ?, ?, ?)", feedID, "<b>Recent&amp;#8217;s</b>", commentsHTML, time.Now().UTC().Format(time.RFC3339), "recent"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec("INSERT INTO articles(feed_id, title, published_at, guid) VALUES(?, ?, ?, ?)", feedID, "Stale", time.Now().UTC().Add(-31*24*time.Hour).Format(time.RFC3339), "stale"); err != nil {
@@ -221,12 +240,12 @@ func TestStoredArticleMaintenanceBackfillsCommentsAndPrunesStaleRows(t *testing.
 		t.Fatal(err)
 	}
 	var count int
-	var commentsLink string
-	if err := db.QueryRow("SELECT COUNT(*), COALESCE(MAX(comments_link), '') FROM articles WHERE feed_id = ?", feedID).Scan(&count, &commentsLink); err != nil {
+	var commentsLink, title string
+	if err := db.QueryRow("SELECT COUNT(*), COALESCE(MAX(comments_link), ''), COALESCE(MAX(title), '') FROM articles WHERE feed_id = ?", feedID).Scan(&count, &commentsLink, &title); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || commentsLink != "https://news.ycombinator.com/item?id=99" {
-		t.Fatalf("unexpected maintained articles: count=%d comments=%q", count, commentsLink)
+	if count != 1 || commentsLink != "https://news.ycombinator.com/item?id=99" || title != "Recent’s" {
+		t.Fatalf("unexpected maintained articles: count=%d comments=%q title=%q", count, commentsLink, title)
 	}
 }
 
@@ -270,7 +289,7 @@ func TestGroupArticlesIncludeAllFeedsInConfiguredOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(descending) != 3 || descending[0].OrderIndex != 200 || descending[2].OrderIndex != 300 || !descending[2].IsRead {
+	if len(descending) != 3 || descending[0].OrderIndex != 300 || !descending[0].IsRead || descending[2].OrderIndex != 100 {
 		t.Fatalf("unexpected descending group order: %#v", descending)
 	}
 	if len(ascending) != 3 || ascending[0].OrderIndex != 100 || ascending[2].OrderIndex != 300 || !ascending[2].IsRead {
@@ -280,8 +299,33 @@ func TestGroupArticlesIncludeAllFeedsInConfiguredOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 || len(page) != 1 || page[0].OrderIndex != 100 {
+	if total != 3 || len(page) != 1 || page[0].OrderIndex != 200 {
 		t.Fatalf("unexpected group page: total=%d articles=%#v", total, page)
+	}
+	firstPage, total, hasMore, err := app.listArticlesForGroupCursorPage(user.ID, strconv.FormatInt(groupID, 10), "desc", 1, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || !hasMore || len(firstPage) != 1 || firstPage[0].OrderIndex != 300 {
+		t.Fatalf("unexpected first cursor page: total=%d hasMore=%v articles=%#v", total, hasMore, firstPage)
+	}
+	if _, err := db.Exec("INSERT INTO articles(feed_id, title, guid, order_index) VALUES(?, 'New arrival', 'new-arrival', 400)", feedIDs[0]); err != nil {
+		t.Fatal(err)
+	}
+	cursor := &articleCursor{OrderIndex: int64(firstPage[0].OrderIndex), ID: firstPage[0].ID}
+	secondPage, _, _, err := app.listArticlesForGroupCursorPage(user.ID, strconv.FormatInt(groupID, 10), "desc", 1, cursor, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondPage) != 1 || secondPage[0].OrderIndex != 200 {
+		t.Fatalf("cursor page admitted a newer article or skipped the next older article: %#v", secondPage)
+	}
+	unreadPage, unreadTotal, _, err := app.listArticlesForGroupCursorPage(user.ID, strconv.FormatInt(groupID, 10), "desc", 10, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unreadTotal != 3 || len(unreadPage) != 3 {
+		t.Fatalf("expected only three unread articles, total=%d articles=%#v", unreadTotal, unreadPage)
 	}
 }
 

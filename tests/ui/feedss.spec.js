@@ -62,11 +62,11 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		id, feed_id: id % 3 === 0 ? 12 : 11, feed_title: id % 3 === 0 ? 'Lobsters' : 'Hacker News', title: `Example article ${id}`,
 		link: `https://example.com/${id}`, comments_link: `https://example.com/${id}/comments`,
 		description: `<p>Summary for article ${id}.</p><a href="https://example.com/${id}/comments">Comments</a>`,
-		published_at: `2026-08-16T1${id}:00:00Z`, is_read: id === 1,
+		published_at: '2026-08-16T12:00:00Z', order_index: 10_000 - id, is_read: id === 1,
 	}));
 	const articles = programmingArticles.concat([
-		{ id: 201, feed_id: 21, feed_title: 'Board Game Quest', title: 'First short article', link: 'https://example.com/201', description: '<p>First summary.</p>', published_at: '2026-08-16T12:00:00Z', is_read: false },
-		{ id: 202, feed_id: 21, feed_title: 'Board Game Quest', title: 'Second short article', link: 'https://example.com/202', description: '<p>Second summary.</p><img src="https://images.example.com/second.png" alt="Second article image">', published_at: '2026-08-16T11:00:00Z', is_read: false },
+		{ id: 201, feed_id: 21, feed_title: 'Board Game Quest', title: 'First short article', link: 'https://example.com/201', description: '<p>First summary.</p>', published_at: '2026-08-16T12:00:00Z', order_index: 201, is_read: false },
+		{ id: 202, feed_id: 21, feed_title: 'Board Game Quest', title: 'Second short article', link: 'https://example.com/202', description: '<p>Second summary.</p><img src="https://images.example.com/second.png" alt="Second article image">', published_at: '2026-08-16T11:00:00Z', order_index: 200, is_read: false },
 	]);
 	await page.route('**/api/image?url=**', route => route.fulfill({
 		contentType: 'image/png',
@@ -84,12 +84,22 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		const groupID = params.get('group_id');
 		const limit = Number(params.get('limit') || 30);
 		const offset = Number(params.get('offset') || 0);
+		const hasCursor = params.has('cursor_order_index') && params.has('cursor_id');
+		const cursorOrder = Number(params.get('cursor_order_index'));
+		const cursorID = Number(params.get('cursor_id'));
+		const unreadOnly = params.get('unread_only') === '1';
 		const groupFeedIDs = new Set(feeds.filter(feed => feed.group_id === Number(groupID)).map(feed => feed.id));
 		const matching = (feedID
 			? articles.filter(article => article.feed_id === Number(feedID))
 			: articles.filter(article => groupFeedIDs.has(article.feed_id)))
-			.slice().sort((left, right) => Number(left.is_read) - Number(right.is_read));
-		return route.fulfill({ json: { articles: matching.slice(offset, offset + limit), total: matching.length } });
+			.filter(article => !unreadOnly || !article.is_read)
+			.slice().sort((left, right) => right.order_index - left.order_index || right.id - left.id);
+		const continuation = hasCursor && Number.isFinite(cursorOrder) && Number.isFinite(cursorID)
+			? matching.filter(article => article.order_index < cursorOrder || (article.order_index === cursorOrder && article.id < cursorID))
+			: matching.slice(offset);
+		return route.fulfill({
+			json: { articles: continuation.slice(0, limit), total: matching.length, has_more: continuation.length > limit },
+		});
 	});
 	await page.route('**/api/feeds/update', route => route.fulfill({ json: { status: 'ok' } }));
 	await page.route('**/api/releases/check', route => route.fulfill({
@@ -130,6 +140,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const shortcutsDialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
 	await expect(shortcutsDialog).toBeVisible();
 	await expect(shortcutsDialog).toContainText('Mark all read');
+	await expect(shortcutsDialog).toContainText('Refresh current view and hide read articles');
 	await shortcutsDialog.getByRole('button', { name: 'Close', exact: true }).click();
 	await expect(shortcutsDialog).toBeHidden();
 	const subscriptions = page.locator('#subscription-list');
@@ -169,6 +180,21 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 
 	const articleRows = page.locator('.article');
 	await expect(articleRows).toHaveCount(30);
+	await expect(page.locator('[data-article-id="1"]')).toHaveCount(0);
+	expect(await page.evaluate(() => [
+		subscriptionMetadataPollInterval(false),
+		subscriptionMetadataPollInterval(true),
+	])).toEqual([30_000, 15 * 60_000]);
+	const articleIDsBeforeMetadataRefresh = await articleRows.evaluateAll(rows => rows.map(row => row.dataset.articleId));
+	groups[0].unread_count = 125;
+	feeds[0].unread_count = 85;
+	await page.evaluate(() => refreshSubscriptionMetadata());
+	await expect(groupTitle.locator('.nav-count')).toHaveText('125');
+	await expect(programmingGroup.locator('.feed-item').filter({ hasText: 'Hacker News' }).locator('.nav-count')).toHaveText('85');
+	expect(await articleRows.evaluateAll(rows => rows.map(row => row.dataset.articleId))).toEqual(articleIDsBeforeMetadataRefresh);
+	groups[0].unread_count = 119;
+	feeds[0].unread_count = 79;
+	await page.evaluate(() => refreshSubscriptionMetadata());
 	await expect(articleRows.first().locator('.article-site-icon')).toHaveAttribute('src', /\/api\/favicon\?url=https%3A%2F%2Fnews\.ycombinator\.com/);
 	const firstHeadline = articleRows.first().locator('.article-title');
 	await expect(firstHeadline).toHaveAttribute('href', 'https://example.com/2');
@@ -183,7 +209,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(headlinePage).toHaveURL('https://example.com/2');
 	await headlinePage.close();
 	await expect(page.locator('.article.selected')).toHaveCount(0);
-	await expect(page.locator('#article-count')).toHaveText('120 articles');
+	await expect(page.locator('#article-count')).toHaveText('119 articles');
 	await page.keyboard.press('j');
 	await expect(page.locator('.article.selected')).toHaveAttribute('data-article-id', '2');
 	await expect(page.locator('.article.selected')).toHaveClass(/read/);
@@ -231,7 +257,8 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 
 	await programmingGroup.locator('.feed-item').filter({ hasText: 'Hacker News' }).click();
 	await expect(articleRows).toHaveCount(30);
-	await expect(page.locator('#article-count')).toHaveText('80 articles');
+	const hackerUnreadCount = articles.filter(article => article.feed_id === 11 && !article.is_read).length;
+	await expect(page.locator('#article-count')).toHaveText(`${hackerUnreadCount} articles`);
 	await expect(page.locator('.article-content')).toHaveCount(0);
 	await page.getByRole('button', { name: 'Feed settings', exact: true }).click();
 	const feedSettingsDialog = page.getByRole('dialog', { name: 'Feed settings' });
@@ -249,12 +276,44 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(commentsPage).toHaveURL(/\/comments$/);
 	await commentsPage.close();
 	await expect(page.locator('.article.selected')).toHaveCount(1);
-	await page.getByRole('button', { name: 'Load more', exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Load more', exact: true })).toHaveCount(0);
+	articles.push({
+		id: 999, feed_id: 11, feed_title: 'Hacker News', title: 'New arrival', link: 'https://example.com/999',
+		description: '<p>New summary.</p>', published_at: '2026-08-17T12:00:00Z', order_index: 20_000, is_read: false,
+	});
+	const continuationRequest = page.waitForRequest(request => {
+		const url = new URL(request.url());
+		return url.pathname === '/api/articles' && url.searchParams.has('cursor_order_index');
+	});
+	await page.locator('#article-pane').evaluate(element => { element.scrollTop = element.scrollHeight; });
+	await continuationRequest;
 	await expect(articleRows).toHaveCount(60);
+	await expect(page.locator('[data-article-id="999"]')).toHaveCount(0);
+	await programmingGroup.locator('.feed-item').filter({ hasText: 'Hacker News' }).click();
+	await expect(articleRows.first()).toHaveAttribute('data-article-id', '999');
+	await expect(page.locator('[data-article-id="1"]')).toHaveCount(0);
+	const unreadRefreshRequest = page.waitForRequest(request => {
+		const url = new URL(request.url());
+		return url.pathname === '/api/articles' && url.searchParams.get('unread_only') === '1' && !url.searchParams.has('cursor_order_index');
+	});
+	await page.keyboard.press('r');
+	await unreadRefreshRequest;
+	await expect(articleRows.first()).toHaveAttribute('data-article-id', '999');
+	await expect(page.locator('[data-article-id="1"]')).toHaveCount(0);
+	await expect(page.locator('#article-pane')).toHaveJSProperty('scrollTop', 0);
+	await page.locator('#mark-all-read-btn').click();
+	const markAllReadDialog = page.getByRole('dialog', { name: 'Mark all articles read?' });
+	await expect(markAllReadDialog).toBeVisible();
+	await expect(markAllReadDialog).toContainText('Mark every unread article in Hacker News as read?');
+	await markAllReadDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(markAllReadDialog).toBeHidden();
+	await expect(page.locator('#mark-all-read-btn')).toBeEnabled();
 	const markAllRequest = page.waitForRequest(request =>
 		request.url().endsWith('/api/articles/read') && request.postData()?.includes('feed_id=11'),
 	);
 	await page.keyboard.press('Shift+A');
+	await expect(markAllReadDialog).toBeVisible();
+	await markAllReadDialog.getByRole('button', { name: 'Mark all read', exact: true }).click();
 	await markAllRequest;
 	await expect(page.locator('#mark-all-read-btn')).toBeDisabled();
 

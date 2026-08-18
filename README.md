@@ -59,7 +59,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v0.4.0
+    image: ghcr.io/goosepod/feedss:v0.5.0
     container_name: feedss
     ports:
       - "4317:4317"
@@ -83,7 +83,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v0.4.0
+  ghcr.io/goosepod/feedss:v0.5.0
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -93,9 +93,10 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 - `j` / `k`: next or previous article
 - `v`: open the selected article
 - `c`: open comments when available
+- `r`: refresh the current feed or group from the top and hide read articles
 - `Shift+A`: mark the current feed or group as read
 - `?`: show shortcuts
 
 ## Releases
 
-Pushing a tag like `v0.4.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.
+Pushing a tag like `v0.5.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

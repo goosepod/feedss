@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	stdhtml "html"
 	"html/template"
 	"io"
 	"log"
@@ -22,7 +23,7 @@ import (
 	"time"
 
 	"github.com/mmcdole/gofeed"
-	"golang.org/x/net/html"
+	xhtml "golang.org/x/net/html"
 	_ "modernc.org/sqlite"
 )
 
@@ -101,6 +102,12 @@ type Article struct {
 type ArticlePage struct {
 	Articles []Article `json:"articles"`
 	Total    int       `json:"total"`
+	HasMore  bool      `json:"has_more"`
+}
+
+type articleCursor struct {
+	OrderIndex int64
+	ID         int64
 }
 
 // App stores runtime state.
@@ -678,13 +685,13 @@ func extractCommentsLink(item *gofeed.Item) string {
 }
 
 func extractCommentsLinkFromHTML(rawHTML string) string {
-	z := html.NewTokenizer(strings.NewReader(rawHTML))
+	z := xhtml.NewTokenizer(strings.NewReader(rawHTML))
 	anchorHref := ""
 	for {
 		switch z.Next() {
-		case html.ErrorToken:
+		case xhtml.ErrorToken:
 			return ""
-		case html.StartTagToken:
+		case xhtml.StartTagToken:
 			token := z.Token()
 			if token.Data != "a" {
 				continue
@@ -699,11 +706,11 @@ func extractCommentsLinkFromHTML(rawHTML string) string {
 			if strings.Contains(strings.ToLower(anchorHref), "news.ycombinator.com/item?id=") {
 				return anchorHref
 			}
-		case html.TextToken:
+		case xhtml.TextToken:
 			if anchorHref != "" && strings.Contains(strings.ToLower(string(z.Text())), "comment") {
 				return anchorHref
 			}
-		case html.EndTagToken:
+		case xhtml.EndTagToken:
 			if z.Token().Data == "a" {
 				anchorHref = ""
 			}
@@ -715,6 +722,38 @@ func maintainStoredArticles(db *sql.DB) error {
 	cutoff := time.Now().UTC().Add(-articleFreshnessWindow).Format(time.RFC3339)
 	if _, err := db.Exec("DELETE FROM articles WHERE published_at IS NOT NULL AND published_at < ?", cutoff); err != nil {
 		return err
+	}
+	titleRows, err := db.Query("SELECT id, title FROM articles")
+	if err != nil {
+		return err
+	}
+	type titleUpdate struct {
+		id    int64
+		title string
+	}
+	titleUpdates := make([]titleUpdate, 0)
+	for titleRows.Next() {
+		var id int64
+		var title string
+		if err := titleRows.Scan(&id, &title); err != nil {
+			titleRows.Close()
+			return err
+		}
+		normalized := normalizeArticleTitle(title)
+		if normalized == "" {
+			normalized = "Untitled article"
+		}
+		if normalized != title {
+			titleUpdates = append(titleUpdates, titleUpdate{id: id, title: normalized})
+		}
+	}
+	if err := titleRows.Close(); err != nil {
+		return err
+	}
+	for _, update := range titleUpdates {
+		if _, err := db.Exec("UPDATE articles SET title = ? WHERE id = ?", update.title, update.id); err != nil {
+			return err
+		}
 	}
 	rows, err := db.Query("SELECT id, COALESCE(description, ''), COALESCE(content, '') FROM articles WHERE COALESCE(comments_link, '') = ''")
 	if err != nil {
@@ -755,27 +794,37 @@ func articleTitle(item *gofeed.Item) string {
 	if item == nil {
 		return "Untitled article"
 	}
-	if title := strings.TrimSpace(item.Title); title != "" {
+	if title := normalizeArticleTitle(item.Title); title != "" {
 		return title
 	}
-	z := html.NewTokenizer(strings.NewReader(item.Description))
-	parts := make([]string, 0, 4)
+	text := normalizeArticleTitle(item.Description)
+	runes := []rune(text)
+	if len(runes) > 100 {
+		text = strings.TrimSpace(string(runes[:100])) + "..."
+	}
+	if text != "" {
+		return text
+	}
+	return "Untitled article"
+}
+
+func normalizeArticleTitle(rawTitle string) string {
+	decoded := strings.TrimSpace(rawTitle)
+	for range 4 {
+		next := stdhtml.UnescapeString(decoded)
+		if next == decoded {
+			break
+		}
+		decoded = next
+	}
+	z := xhtml.NewTokenizer(strings.NewReader(decoded))
+	var text strings.Builder
 	for {
 		switch z.Next() {
-		case html.ErrorToken:
-			text := strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
-			runes := []rune(text)
-			if len(runes) > 100 {
-				text = strings.TrimSpace(string(runes[:100])) + "..."
-			}
-			if text != "" {
-				return text
-			}
-			return "Untitled article"
-		case html.TextToken:
-			if text := strings.TrimSpace(string(z.Text())); text != "" {
-				parts = append(parts, text)
-			}
+		case xhtml.ErrorToken:
+			return strings.Join(strings.Fields(text.String()), " ")
+		case xhtml.TextToken:
+			text.Write(z.Text())
 		}
 	}
 }
@@ -1028,13 +1077,26 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	var articles []Article
 	var total int
+	var hasMore bool
 	var err error
+	var cursor *articleCursor
+	cursorOrder, cursorOrderErr := strconv.ParseInt(r.URL.Query().Get("cursor_order_index"), 10, 64)
+	cursorID, cursorIDErr := strconv.ParseInt(r.URL.Query().Get("cursor_id"), 10, 64)
+	if cursorOrderErr == nil && cursorIDErr == nil {
+		cursor = &articleCursor{OrderIndex: cursorOrder, ID: cursorID}
+	}
+	unreadOnly := r.URL.Query().Get("unread_only") == "1" || strings.EqualFold(r.URL.Query().Get("unread_only"), "true")
 	if groupID != "" {
 		sortDirection := "desc"
 		if settings, settingsErr := app.getSettings(); settingsErr == nil {
 			sortDirection = settings.DefaultSortOrder
 		}
-		articles, total, err = app.listArticlesForGroupPage(user.ID, groupID, sortDirection, limit, offset)
+		if offset > 0 && cursor == nil && !unreadOnly {
+			articles, total, err = app.listArticlesForGroupPage(user.ID, groupID, sortDirection, limit, offset)
+			hasMore = offset+len(articles) < total
+		} else {
+			articles, total, hasMore, err = app.listArticlesForGroupCursorPage(user.ID, groupID, sortDirection, limit, cursor, unreadOnly)
+		}
 	} else {
 		var sortDirection string
 		err = app.db.QueryRow("SELECT sort_direction FROM feeds WHERE id = ? AND created_by = ?", feedID, user.ID).Scan(&sortDirection)
@@ -1043,7 +1105,12 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err == nil {
-			articles, total, err = app.listArticlesForFeedPage(user.ID, feedID, sortDirection, limit, offset)
+			if offset > 0 && cursor == nil && !unreadOnly {
+				articles, total, err = app.listArticlesForFeedPage(user.ID, feedID, sortDirection, limit, offset)
+				hasMore = offset+len(articles) < total
+			} else {
+				articles, total, hasMore, err = app.listArticlesForFeedCursorPage(user.ID, feedID, sortDirection, limit, cursor, unreadOnly)
+			}
 		}
 	}
 	if err != nil {
@@ -1051,7 +1118,7 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to load articles", http.StatusInternalServerError)
 		return
 	}
-	jsonSuccess(w, ArticlePage{Articles: articles, Total: total})
+	jsonSuccess(w, ArticlePage{Articles: articles, Total: total, HasMore: hasMore})
 }
 
 func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
@@ -1249,14 +1316,14 @@ func (app *App) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func discoverFaviconURL(siteURL *url.URL, document io.Reader) string {
-	root, err := html.Parse(io.LimitReader(document, maxFaviconPageBytes))
+	root, err := xhtml.Parse(io.LimitReader(document, maxFaviconPageBytes))
 	if err != nil {
 		return ""
 	}
 	var fallback string
-	var visit func(*html.Node) string
-	visit = func(node *html.Node) string {
-		if node.Type == html.ElementNode && node.Data == "link" {
+	var visit func(*xhtml.Node) string
+	visit = func(node *xhtml.Node) string {
+		if node.Type == xhtml.ElementNode && node.Data == "link" {
 			var href string
 			var relTokens []string
 			for _, attribute := range node.Attr {
@@ -1489,7 +1556,7 @@ func (app *App) listArticlesForFeedPage(userID int64, feedID, sortDirection stri
 		return nil, 0, err
 	}
 	rows, err := app.db.Query(
-		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.feed_id = ? AND f.created_by = ? ORDER BY a.is_read ASC, a.order_index "+direction+", a.published_at "+direction+", a.id "+direction+" LIMIT ? OFFSET ?",
+		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.feed_id = ? AND f.created_by = ? ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ? OFFSET ?",
 		feedID, userID, limit, offset,
 	)
 	if err != nil {
@@ -1507,9 +1574,62 @@ func (app *App) listArticlesForFeedPage(userID int64, feedID, sortDirection stri
 		if publishedAt.Valid {
 			a.PublishedAt, _ = time.Parse(time.RFC3339, publishedAt.String)
 		}
+		a.Title = normalizeArticleTitle(a.Title)
 		articles = append(articles, a)
 	}
 	return articles, total, rows.Err()
+}
+
+func (app *App) listArticlesForFeedCursorPage(userID int64, feedID, sortDirection string, limit int, cursor *articleCursor, unreadOnly bool) ([]Article, int, bool, error) {
+	direction := "DESC"
+	comparison := "<"
+	if strings.EqualFold(sortDirection, "asc") {
+		direction = "ASC"
+		comparison = ">"
+	}
+	where := "a.feed_id = ? AND f.created_by = ?"
+	args := []any{feedID, userID}
+	if unreadOnly {
+		where += " AND a.is_read = 0"
+	}
+	var total int
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, false, err
+	}
+	if cursor != nil {
+		where += " AND (a.order_index " + comparison + " ? OR (a.order_index = ? AND a.id " + comparison + " ?))"
+		args = append(args, cursor.OrderIndex, cursor.OrderIndex, cursor.ID)
+	}
+	args = append(args, limit+1)
+	rows, err := app.db.Query(
+		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where+" ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ?",
+		args...,
+	)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	defer rows.Close()
+	articles := make([]Article, 0, limit+1)
+	for rows.Next() {
+		var article Article
+		var publishedAt sql.NullString
+		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead); err != nil {
+			return nil, 0, false, err
+		}
+		if publishedAt.Valid {
+			article.PublishedAt, _ = time.Parse(time.RFC3339, publishedAt.String)
+		}
+		article.Title = normalizeArticleTitle(article.Title)
+		articles = append(articles, article)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	hasMore := len(articles) > limit
+	if hasMore {
+		articles = articles[:limit]
+	}
+	return articles, total, hasMore, nil
 }
 
 func (app *App) listArticlesForGroup(userID int64, groupID, sortDirection string) ([]Article, error) {
@@ -1536,7 +1656,7 @@ func (app *App) listArticlesForGroupPage(userID int64, groupID, sortDirection st
 		FROM articles a
 		JOIN feeds f ON f.id = a.feed_id
 		WHERE f.group_id = ? AND f.created_by = ?
-		ORDER BY a.is_read ASC, a.order_index `+direction+`, a.published_at `+direction+`, a.id `+direction+`
+		ORDER BY a.order_index `+direction+`, a.id `+direction+`
 		LIMIT ? OFFSET ?`,
 		groupID, userID, limit, offset,
 	)
@@ -1559,9 +1679,69 @@ func (app *App) listArticlesForGroupPage(userID int64, groupID, sortDirection st
 		if publishedAt.Valid {
 			article.PublishedAt, _ = time.Parse(time.RFC3339, publishedAt.String)
 		}
+		article.Title = normalizeArticleTitle(article.Title)
 		articles = append(articles, article)
 	}
 	return articles, total, rows.Err()
+}
+
+func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirection string, limit int, cursor *articleCursor, unreadOnly bool) ([]Article, int, bool, error) {
+	direction := "DESC"
+	comparison := "<"
+	if strings.EqualFold(sortDirection, "asc") {
+		direction = "ASC"
+		comparison = ">"
+	}
+	where := "f.group_id = ? AND f.created_by = ?"
+	args := []any{groupID, userID}
+	if unreadOnly {
+		where += " AND a.is_read = 0"
+	}
+	var total int
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, false, err
+	}
+	if cursor != nil {
+		where += " AND (a.order_index " + comparison + " ? OR (a.order_index = ? AND a.id " + comparison + " ?))"
+		args = append(args, cursor.OrderIndex, cursor.OrderIndex, cursor.ID)
+	}
+	args = append(args, limit+1)
+	rows, err := app.db.Query(
+		`SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''),
+			COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''),
+			COALESCE(a.media_url, ''), a.order_index, a.is_read
+		FROM articles a
+		JOIN feeds f ON f.id = a.feed_id
+		WHERE `+where+`
+		ORDER BY a.order_index `+direction+`, a.id `+direction+`
+		LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	defer rows.Close()
+	articles := make([]Article, 0, limit+1)
+	for rows.Next() {
+		var article Article
+		var publishedAt sql.NullString
+		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead); err != nil {
+			return nil, 0, false, err
+		}
+		if publishedAt.Valid {
+			article.PublishedAt, _ = time.Parse(time.RFC3339, publishedAt.String)
+		}
+		article.Title = normalizeArticleTitle(article.Title)
+		articles = append(articles, article)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	hasMore := len(articles) > limit
+	if hasMore {
+		articles = articles[:limit]
+	}
+	return articles, total, hasMore, nil
 }
 
 func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {

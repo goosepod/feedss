@@ -286,11 +286,6 @@ button:disabled { opacity: .48; cursor: default; }
   scroll-margin-top: 10px;
 }
 .article + .article { margin-top: 10px; }
-.load-more {
-  display: block;
-  min-width: 140px;
-  margin: 18px auto 0;
-}
 .article.unread { border-left: 4px solid var(--primary); }
 .article.read { border-left: 4px solid transparent; }
 .article.selected { outline: 2px solid color-mix(in srgb, var(--focus) 24%, transparent); }
@@ -356,8 +351,9 @@ dialog {
 dialog::backdrop { background: rgba(18, 24, 31, .48); }
 dialog form { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 22px; }
 dialog h2 { margin: 0 0 8px; font-size: 1.35rem; }
-.shortcuts-dialog, .release-dialog { padding: 22px; }
-.release-dialog p { margin: 0; color: var(--muted); }
+.shortcuts-dialog, .release-dialog, .confirmation-dialog { padding: 22px; }
+.release-dialog p, .confirmation-dialog p { margin: 0; color: var(--muted); }
+.confirmation-dialog .dialog-note { margin-top: 8px; font-size: .9rem; }
 .shortcut-list { margin: 14px 0 0; }
 .shortcut-list > div {
   display: grid;

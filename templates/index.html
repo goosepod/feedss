@@ -145,6 +145,18 @@
     </form>
   </dialog>
 
+  <dialog id="mark-all-read-modal" aria-labelledby="mark-all-read-modal-title" aria-describedby="mark-all-read-modal-summary">
+    <div class="confirmation-dialog">
+      <h2 id="mark-all-read-modal-title">Mark all articles read?</h2>
+      <p id="mark-all-read-modal-summary"></p>
+      <p class="dialog-note">This action cannot be undone.</p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-mark-all-read-btn" class="button-secondary">Cancel</button>
+        <button type="button" id="confirm-mark-all-read-btn">Mark all read</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="shortcuts-modal" aria-labelledby="shortcuts-modal-title">
     <div class="shortcuts-dialog">
       <h2 id="shortcuts-modal-title">Keyboard shortcuts</h2>
@@ -157,6 +169,7 @@
         <div><dt><kbd>Shift</kbd> + <kbd>K</kbd></dt><dd>Previous group</dd></div>
         <div><dt><kbd>V</kbd></dt><dd>Open original</dd></div>
         <div><dt><kbd>C</kbd></dt><dd>Open comments</dd></div>
+		<div><dt><kbd>R</kbd></dt><dd>Refresh current view and hide read articles</dd></div>
         <div><dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all read</dd></div>
         <div><dt><kbd>?</kbd></dt><dd>Show shortcuts</dd></div>
       </dl>

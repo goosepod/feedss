@@ -1,4 +1,6 @@
 const ARTICLE_PAGE_SIZE = 30;
+const FOREGROUND_SUBSCRIPTION_POLL_INTERVAL_MS = 30_000;
+const BACKGROUND_SUBSCRIPTION_POLL_INTERVAL_MS = 15 * 60_000;
 const DEFAULT_TITLE = 'feedss';
 const STATIC_FAVICON = '/static/favicon.svg';
 
@@ -8,7 +10,10 @@ const state = {
   articles: [],
 	articleTotal: 0,
 	articleOffset: 0,
+	hasMoreArticles: false,
+	hideReadArticles: false,
 	articlesLoading: false,
+	subscriptionMetadataLoading: false,
   selectedGroupId: null,
   selectedFeedId: null,
   viewMode: 'group',
@@ -23,6 +28,7 @@ const state = {
 };
 
 const elements = {};
+let subscriptionPollTimer = null;
 
 function setStatus(message = '', type = 'info') {
   elements.statusMessage.textContent = message;
@@ -93,9 +99,12 @@ async function loadFeeds() {
   }
 	renderSubscriptions();
 	if (state.viewMode === 'group' && state.selectedGroupId !== null) {
-		await loadGroupArticles(state.selectedGroupId);
-	} else if (state.selectedFeedId) await loadArticles(state.selectedFeedId);
-  else {
+		const group = state.groups.find(item => item.id === state.selectedGroupId);
+		await loadGroupArticles(state.selectedGroupId, { hideRead: sourceHasUnread(group) });
+	} else if (state.selectedFeedId) {
+		const feed = state.feeds.find(item => item.id === state.selectedFeedId);
+		await loadArticles(state.selectedFeedId, { hideRead: sourceHasUnread(feed) });
+	} else {
     state.articles = [];
 	state.articleTotal = 0;
 	state.articleOffset = 0;
@@ -103,21 +112,74 @@ async function loadFeeds() {
   }
 }
 
-async function loadGroupArticles(groupID) {
+async function refreshSubscriptionMetadata() {
+	if (state.subscriptionMetadataLoading) return;
+	state.subscriptionMetadataLoading = true;
+	try {
+		const [groups, feeds] = await Promise.all([
+			fetchJson('/api/groups'),
+			fetchJson('/api/feeds'),
+		]);
+		state.groups = Array.isArray(groups) ? groups : [];
+		state.feeds = Array.isArray(feeds) ? feeds : [];
+		state.expandedGroupIds = new Set(
+			[...state.expandedGroupIds].filter(id => state.groups.some(group => group.id === id)),
+		);
+		renderSubscriptions();
+		updateArticleControls();
+	} catch {
+		// Background metadata polling should never interrupt reading.
+	} finally {
+		state.subscriptionMetadataLoading = false;
+	}
+}
+
+function subscriptionMetadataPollInterval(background = document.hidden || !document.hasFocus()) {
+	return background
+		? BACKGROUND_SUBSCRIPTION_POLL_INTERVAL_MS
+		: FOREGROUND_SUBSCRIPTION_POLL_INTERVAL_MS;
+}
+
+function scheduleSubscriptionMetadataPoll() {
+	if (subscriptionPollTimer !== null) window.clearTimeout(subscriptionPollTimer);
+	subscriptionPollTimer = window.setTimeout(async () => {
+		await refreshSubscriptionMetadata();
+		scheduleSubscriptionMetadataPoll();
+	}, subscriptionMetadataPollInterval());
+}
+
+function startSubscriptionMetadataPolling() {
+	const handleAttentionChange = () => {
+		const focused = !document.hidden && document.hasFocus();
+		scheduleSubscriptionMetadataPoll();
+		if (focused) void refreshSubscriptionMetadata();
+	};
+	scheduleSubscriptionMetadataPoll();
+	window.addEventListener('focus', handleAttentionChange);
+	window.addEventListener('blur', scheduleSubscriptionMetadataPoll);
+	document.addEventListener('visibilitychange', handleAttentionChange);
+}
+
+async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 	const requestID = ++state.articleRequest;
 	const group = state.groups.find(item => item.id === groupID);
 	elements.readerLabel.textContent = 'Current group';
 	elements.feedHeader.textContent = group?.name || 'Loading group';
 	state.articleTotal = 0;
 	state.articleOffset = 0;
+	state.hasMoreArticles = false;
+	state.hideReadArticles = hideRead;
 	elements.articlePane.innerHTML = '<div class="empty-state">Loading articles...</div>';
 	updateArticleControls();
 	try {
-		const data = await fetchJson(`/api/articles?group_id=${encodeURIComponent(groupID)}&limit=${ARTICLE_PAGE_SIZE}&offset=0`);
+		const unreadOnly = hideRead ? '&unread_only=1' : '';
+		const data = await fetchJson(`/api/articles?group_id=${encodeURIComponent(groupID)}&limit=${ARTICLE_PAGE_SIZE}${unreadOnly}`);
 		if (requestID !== state.articleRequest) return;
 		state.articles = Array.isArray(data?.articles) ? data.articles : [];
 		state.articleOffset = state.articles.length;
 		state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+		state.hasMoreArticles = typeof data?.has_more === 'boolean'
+			? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
 		state.expandedArticleIds = new Set(
 			state.defaultDisplayMode === 'headline' ? [] : state.articles.map(article => article.id),
@@ -129,26 +191,32 @@ async function loadGroupArticles(groupID) {
 		state.articles = [];
 		state.articleTotal = 0;
 		state.articleOffset = 0;
+		state.hasMoreArticles = false;
 		renderArticles();
 		setStatus(`Could not load group articles: ${error.message}`, 'error');
 	}
 }
 
-async function loadArticles(feedID) {
+async function loadArticles(feedID, { hideRead = false } = {}) {
   const requestID = ++state.articleRequest;
   const feed = state.feeds.find(item => item.id === feedID);
 	elements.readerLabel.textContent = 'Current feed';
   elements.feedHeader.textContent = feed?.title || 'Loading feed';
 	state.articleTotal = 0;
 	state.articleOffset = 0;
+	state.hasMoreArticles = false;
+	state.hideReadArticles = hideRead;
   elements.articlePane.innerHTML = '<div class="empty-state">Loading articles...</div>';
   updateArticleControls();
   try {
-    const data = await fetchJson(`/api/articles?feed_id=${encodeURIComponent(feedID)}&limit=${ARTICLE_PAGE_SIZE}&offset=0`);
+    const unreadOnly = hideRead ? '&unread_only=1' : '';
+    const data = await fetchJson(`/api/articles?feed_id=${encodeURIComponent(feedID)}&limit=${ARTICLE_PAGE_SIZE}${unreadOnly}`);
     if (requestID !== state.articleRequest) return;
-	state.articles = prioritizeUnread(Array.isArray(data?.articles) ? data.articles : []);
+	state.articles = Array.isArray(data?.articles) ? data.articles : [];
 	state.articleOffset = state.articles.length;
 	state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+	state.hasMoreArticles = typeof data?.has_more === 'boolean'
+		? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
 	state.expandedArticleIds = new Set(
 	  feed?.display_mode === 'headline' ? [] : state.articles.map(article => article.id),
@@ -160,6 +228,7 @@ async function loadArticles(feedID) {
     state.articles = [];
 	state.articleTotal = 0;
 	state.articleOffset = 0;
+	state.hasMoreArticles = false;
     renderArticles();
     setStatus(`Could not load articles: ${error.message}`, 'error');
   }
@@ -169,6 +238,10 @@ function getVisibleFeeds() {
   return state.selectedGroupId === null
     ? state.feeds
     : state.feeds.filter(feed => feed.group_id === state.selectedGroupId);
+}
+
+function sourceHasUnread(source) {
+	return (Number(source?.unread_count) || 0) > 0;
 }
 
 function createNavButton(className, label, active, onClick, count) {
@@ -295,14 +368,16 @@ function updateBrowserUnreadBadge() {
 }
 
 function selectGroup(groupID) {
+	const group = state.groups.find(item => item.id === groupID);
   state.selectedGroupId = groupID;
 	state.selectedFeedId = null;
 	state.viewMode = 'group';
   state.articles = [];
 	state.articleTotal = 0;
 	state.articleOffset = 0;
+	state.hasMoreArticles = false;
   renderSubscriptions();
-	loadGroupArticles(groupID);
+	loadGroupArticles(groupID, { hideRead: sourceHasUnread(group) });
 }
 
 function toggleGroup(groupID) {
@@ -316,7 +391,6 @@ function toggleGroup(groupID) {
 }
 
 function selectFeed(feedID) {
-  if (feedID === state.selectedFeedId) return;
   const feed = state.feeds.find(item => item.id === feedID);
   if (feed) {
     state.selectedGroupId = feed.group_id;
@@ -324,7 +398,7 @@ function selectFeed(feedID) {
   state.selectedFeedId = feedID;
 	state.viewMode = 'feed';
   renderSubscriptions();
-  loadArticles(feedID);
+  loadArticles(feedID, { hideRead: sourceHasUnread(feed) });
 }
 
 function safeExternalURL(rawURL) {
@@ -405,13 +479,6 @@ function createArticleLink(label, rawURL) {
 function getCurrentDisplayMode() {
 	const feed = state.feeds.find(item => item.id === state.selectedFeedId);
 	return state.viewMode === 'group' ? state.defaultDisplayMode : (feed?.display_mode || 'headline');
-}
-
-function prioritizeUnread(articles) {
-	return [
-		...articles.filter(article => !article.is_read),
-		...articles.filter(article => article.is_read),
-	];
 }
 
 function removeDuplicateCommentsLink(body, commentsLink) {
@@ -524,16 +591,8 @@ function renderArticles() {
 		});
     elements.articlePane.appendChild(articleElement);
   });
-	if (state.articles.length < state.articleTotal) {
-		const loadMore = document.createElement('button');
-		loadMore.type = 'button';
-		loadMore.className = 'load-more';
-		loadMore.textContent = state.articlesLoading ? 'Loading...' : 'Load more';
-		loadMore.disabled = state.articlesLoading;
-		loadMore.addEventListener('click', loadMoreArticles);
-		elements.articlePane.appendChild(loadMore);
-	}
   updateArticleControls();
+	queueMicrotask(maybeLoadMoreArticles);
 }
 
 function updateArticleControls() {
@@ -550,7 +609,7 @@ function updateArticleControls() {
 async function moveArticle(offset) {
   if (!state.articles.length) return;
 	if (state.selectedArticleIndex < 0 && offset < 0) return;
-	if (offset > 0 && state.selectedArticleIndex === state.articles.length - 1 && state.articles.length < state.articleTotal) {
+	if (offset > 0 && state.selectedArticleIndex === state.articles.length - 1 && state.hasMoreArticles) {
 		await loadMoreArticles();
 	}
 	const nextIndex = state.selectedArticleIndex < 0
@@ -580,20 +639,27 @@ function activateArticle(article, index) {
 }
 
 async function loadMoreArticles() {
-	if (state.articlesLoading || state.articles.length >= state.articleTotal) return false;
+	if (state.articlesLoading || !state.hasMoreArticles || !state.articles.length) return false;
 	state.articlesLoading = true;
 	const requestID = state.articleRequest;
 	const parameter = state.viewMode === 'group' ? 'group_id' : 'feed_id';
 	const id = state.viewMode === 'group' ? state.selectedGroupId : state.selectedFeedId;
+	const lastArticle = state.articles[state.articles.length - 1];
+	const cursor = Number.isFinite(Number(lastArticle.order_index))
+		? `&cursor_order_index=${encodeURIComponent(lastArticle.order_index)}&cursor_id=${encodeURIComponent(lastArticle.id)}`
+		: `&offset=${state.articleOffset}`;
+	const unreadOnly = state.hideReadArticles ? '&unread_only=1' : '';
+	const scrollTop = elements.articlePane.scrollTop;
 	try {
-		const data = await fetchJson(`/api/articles?${parameter}=${encodeURIComponent(id)}&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}`);
+		const data = await fetchJson(`/api/articles?${parameter}=${encodeURIComponent(id)}&limit=${ARTICLE_PAGE_SIZE}${cursor}${unreadOnly}`);
 		if (requestID !== state.articleRequest) return false;
 		const received = Array.isArray(data?.articles) ? data.articles : [];
 		state.articleOffset += received.length;
 		const existingIDs = new Set(state.articles.map(article => article.id));
 		const articles = received.filter(article => !existingIDs.has(article.id));
 		state.articles.push(...articles);
-		state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+		state.hasMoreArticles = typeof data?.has_more === 'boolean'
+			? data.has_more : received.length === ARTICLE_PAGE_SIZE;
 		if (getCurrentDisplayMode() !== 'headline') {
 			articles.forEach(article => state.expandedArticleIds.add(article.id));
 		}
@@ -603,7 +669,25 @@ async function loadMoreArticles() {
 		return false;
 	} finally {
 		state.articlesLoading = false;
-		if (requestID === state.articleRequest) renderArticles();
+		if (requestID === state.articleRequest) {
+			renderArticles();
+			elements.articlePane.scrollTop = scrollTop;
+		}
+	}
+}
+
+function maybeLoadMoreArticles() {
+	if (state.articlesLoading || !state.hasMoreArticles) return;
+	const remaining = elements.articlePane.scrollHeight - elements.articlePane.scrollTop - elements.articlePane.clientHeight;
+	if (remaining <= Math.max(400, elements.articlePane.clientHeight * 0.75)) void loadMoreArticles();
+}
+
+async function refreshCurrentView() {
+	elements.articlePane.scrollTop = 0;
+	if (state.viewMode === 'group' && state.selectedGroupId !== null) {
+		await loadGroupArticles(state.selectedGroupId, { hideRead: true });
+	} else if (state.selectedFeedId !== null) {
+		await loadArticles(state.selectedFeedId, { hideRead: true });
 	}
 }
 
@@ -618,7 +702,6 @@ async function markArticleRead(article) {
 	if (article.is_read) return;
 	const feed = state.feeds.find(item => item.id === article.feed_id);
 	article.is_read = true;
-	state.articleOffset = Math.max(0, state.articleOffset - 1);
 	if (feed) adjustUnreadCounts(feed, -1);
 	const articleElement = elements.articlePane.querySelector(`[data-article-id="${article.id}"]`);
 	articleElement?.classList.remove('unread');
@@ -632,7 +715,6 @@ async function markArticleRead(article) {
 		});
 	} catch (error) {
 		article.is_read = false;
-		state.articleOffset += 1;
 		if (feed) adjustUnreadCounts(feed, 1);
 		articleElement?.classList.remove('read');
 		articleElement?.classList.add('unread');
@@ -641,8 +723,19 @@ async function markArticleRead(article) {
 	}
 }
 
+function requestMarkAllRead() {
+	const source = state.viewMode === 'group'
+		? state.groups.find(item => item.id === state.selectedGroupId)
+		: state.feeds.find(item => item.id === state.selectedFeedId);
+	if (!source || (Number(source.unread_count) || 0) === 0) return;
+	const name = source.name || source.title || 'the current view';
+	elements.markAllReadSummary.textContent = `Mark every unread article in ${name} as read?`;
+	elements.markAllReadModal.showModal();
+}
+
 async function markAllRead() {
 	const mode = state.viewMode;
+	const hideRead = state.hideReadArticles;
 	const feed = state.feeds.find(item => item.id === state.selectedFeedId);
 	const group = state.groups.find(item => item.id === state.selectedGroupId);
 	if (mode === 'feed' && !feed) return;
@@ -668,8 +761,8 @@ async function markAllRead() {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams(mode === 'group' ? { group_id: group.id } : { feed_id: feed.id }),
 		});
-		if (mode === 'group') await loadGroupArticles(group.id);
-		else await loadArticles(feed.id);
+		if (mode === 'group') await loadGroupArticles(group.id, { hideRead });
+		else await loadArticles(feed.id, { hideRead });
 	} catch (error) {
 		unread.forEach(article => { article.is_read = false; });
 		state.feeds.forEach(item => { item.unread_count = previousFeedUnread.get(item.id) || 0; });
@@ -730,7 +823,7 @@ async function saveFeedSettings() {
 		feed.display_mode = displayMode;
 		feed.sort_direction = sortDirection;
 		elements.feedSettingsModal.close();
-		await loadArticles(feed.id);
+		await loadArticles(feed.id, { hideRead: state.hideReadArticles });
 		setStatus('Feed settings saved.');
 	} catch (error) {
 		setFormError(elements.feedSettingsError, error.message);
@@ -879,7 +972,7 @@ function bindKeyboard() {
 		}
 		if (event.shiftKey && key === 'a') {
 			event.preventDefault();
-			return markAllRead();
+			return requestMarkAllRead();
 		}
     if (event.shiftKey && key === 'j') return moveGroup(1);
     if (event.shiftKey && key === 'k') return moveGroup(-1);
@@ -889,6 +982,10 @@ function bindKeyboard() {
     if (key === 'p') return moveFeed(-1);
 		if (key === 'v') return openSelectedArticleField('link');
 		if (key === 'c') return openSelectedArticleField('comments_link');
+		if (key === 'r') {
+			event.preventDefault();
+			return refreshCurrentView();
+		}
   });
 }
 
@@ -900,6 +997,9 @@ function cacheElements() {
 	readerLabel: document.getElementById('reader-label'), feedHeader: document.getElementById('feed-header'),
 	articlePane: document.getElementById('article-pane'), articleCount: document.getElementById('article-count'),
 	markAllRead: document.getElementById('mark-all-read-btn'),
+	markAllReadModal: document.getElementById('mark-all-read-modal'),
+	markAllReadSummary: document.getElementById('mark-all-read-modal-summary'),
+	confirmMarkAllRead: document.getElementById('confirm-mark-all-read-btn'),
 	feedSettingsButton: document.getElementById('feed-settings-btn'),
     feedModal: document.getElementById('feed-modal'), feedForm: document.getElementById('feed-form'),
     feedURL: document.getElementById('feed-url'), feedGroup: document.getElementById('feed-group'),
@@ -956,7 +1056,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('export-btn').addEventListener('click', exportOpml);
   elements.opmlInput.addEventListener('change', handleOpmlFileSelect);
-  elements.markAllRead.addEventListener('click', markAllRead);
+  elements.markAllRead.addEventListener('click', requestMarkAllRead);
+	document.getElementById('cancel-mark-all-read-btn').addEventListener('click', () => elements.markAllReadModal.close());
+	elements.confirmMarkAllRead.addEventListener('click', () => {
+		elements.markAllReadModal.close();
+		void markAllRead();
+	});
+	elements.articlePane.addEventListener('scroll', maybeLoadMoreArticles, { passive: true });
   bindKeyboard();
 	try {
 		await loadSettings();
@@ -966,8 +1072,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await loadGroups();
     await loadFeeds();
-  } catch (error) {
-    setStatus(`Could not load feeds: ${error.message}`, 'error');
-  }
+	} catch (error) {
+		setStatus(`Could not load feeds: ${error.message}`, 'error');
+	}
+	startSubscriptionMetadataPolling();
 	checkForNewRelease();
 });
