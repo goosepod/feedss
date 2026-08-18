@@ -2,7 +2,7 @@
 
 feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, manual refresh, release notifications, and a local SQLite database.
 
-See the [changelog](CHANGELOG.md) for release history.
+See the [changelog](CHANGELOG.md) for release history. Contributions are covered by the [contributing guide](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md), and [security policy](SECURITY.md). feedss is licensed under the [GNU General Public License v3.0](LICENSE).
 
 It is designed for a trusted home-lab, desktop, LAN, or Tailscale-style environment rather than public multi-tenant hosting.
 
