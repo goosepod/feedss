@@ -2,7 +2,13 @@ const { test, expect } = require('@playwright/test');
 
 async function login(page) {
   await page.goto('/login');
-	await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+	const setupHeading = page.getByRole('heading', { name: 'Create administrator', exact: true });
+	const isFirstStart = await setupHeading.isVisible();
+	if (isFirstStart) {
+		await expect(page.getByText('The account you create here will become the administrator')).toBeVisible();
+	} else {
+		await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+	}
 	await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/static/favicon.svg');
 	await expect(page.locator('.login-card')).toBeVisible();
 	await expect(page.locator('.login-card')).toHaveCSS('display', 'grid');
@@ -12,7 +18,7 @@ async function login(page) {
   await page.getByLabel('Password').fill('admin123');
   await Promise.all([
     page.waitForURL('/'),
-		page.getByRole('button', { name: 'Sign in', exact: true }).click(),
+		page.getByRole('button', { name: isFirstStart ? 'Create administrator' : 'Sign in', exact: true }).click(),
   ]);
   await expect(page.locator('#feed-header')).toBeVisible();
 }
@@ -42,6 +48,7 @@ async function expectSelectedArticleToKeepTopPadding(page) {
 }
 
 test('core reader workflow is usable', async ({ page }, testInfo) => {
+	const users = [{ id: 1, username: 'admin', is_admin: true, must_change_password: false }];
 	const groups = [
 		{ id: 1, name: 'Programming', feed_count: 2, unread_count: 119 },
 		{ id: 2, name: 'Board games', feed_count: 1, unread_count: 2 },
@@ -56,7 +63,10 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		{ id: 11, group_id: 1, title: 'Hacker News', url: 'https://news.ycombinator.com/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 79 },
 		{ id: 12, group_id: 1, title: 'Lobsters', url: 'https://lobste.rs/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 40 },
 		{ id: 21, group_id: 2, title: 'Board Game Quest', url: 'https://www.boardgamequest.com/feed/', display_mode: 'headline', sort_direction: 'desc', unread_count: 1 },
-		{ id: 501, group_id: 50, title: 'Scroll test feed', url: 'https://example.com/feed.xml', display_mode: 'headline', sort_direction: 'desc', unread_count: 0 },
+		{
+			id: 501, group_id: 50, title: 'Scroll test feed', url: 'https://example.com/feed.xml', display_mode: 'headline', sort_direction: 'desc', unread_count: 0,
+			last_refresh_error: 'http error: 404 Not Found', last_refresh_at: '2026-08-19T14:48:09Z', last_successful_refresh_at: '2026-08-18T14:48:09Z',
+		},
 	];
 	const programmingArticles = Array.from({ length: 120 }, (_, index) => index + 1).map(id => ({
 		id, feed_id: id % 3 === 0 ? 12 : 11, feed_title: id % 3 === 0 ? 'Lobsters' : 'Hacker News', title: `Example article ${id}`,
@@ -102,6 +112,19 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		});
 	});
 	await page.route('**/api/feeds/update', route => route.fulfill({ json: { status: 'ok' } }));
+	await page.route('**/api/users', route => {
+		if (route.request().method() === 'GET') return route.fulfill({ json: users });
+		const params = new URLSearchParams(route.request().postData() || '');
+		const user = { id: users.length + 1, username: params.get('username'), is_admin: false, must_change_password: true };
+		users.push(user);
+		return route.fulfill({ json: user });
+	});
+	await page.route('**/api/feeds/delete', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const index = feeds.findIndex(feed => feed.id === Number(params.get('feed_id')));
+		if (index >= 0) feeds.splice(index, 1);
+		return route.fulfill({ json: { status: 'ok' } });
+	});
 	await page.route('**/api/releases/check', route => route.fulfill({
 		json: {
 			enabled: true,
@@ -131,7 +154,16 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		}
 		return route.fulfill({ json: { status: 'ok', updated } });
 	});
-	await page.route('**/api/refresh', route => route.fulfill({ json: { refreshed: 2, failed: 0 } }));
+	await page.route('**/api/refresh', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const feedID = Number(params.get('feed_id'));
+		if (feedID) {
+			const feed = feeds.find(item => item.id === feedID);
+			if (feed) feed.last_refresh_error = '';
+			return route.fulfill({ json: { refreshed: feed ? 1 : 0, failed: 0 } });
+		}
+		return route.fulfill({ json: { refreshed: 2, failed: 0 } });
+	});
   await login(page);
 
   await expect(page.getByRole('link', { name: 'feedss', exact: true })).toBeVisible();
@@ -140,7 +172,10 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect.poll(() => page.locator('link[rel="icon"]').getAttribute('type')).toBe('image/png');
 	await expect(page.locator('link[rel="icon"]')).toHaveAttribute('sizes', '64x64');
 	expect(await page.evaluate(() => formatFaviconUnreadCount(483))).toBe('483');
-	expect(await page.evaluate(() => formatFaviconUnreadCount(4_832))).toBe('4k');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(999))).toBe('999');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(1_000))).toBe('1k');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(2_349))).toBe('2.3k');
+	expect(await page.evaluate(() => formatFaviconUnreadCount(12_832))).toBe('12k');
   await expect(page.getByRole('button', { name: 'Add feed', exact: true })).toBeVisible();
 	await page.keyboard.press('?');
 	const shortcutsDialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
@@ -171,6 +206,21 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const sidebarScrollAfter = await sidebar.evaluate(element => element.scrollTop);
 	expect(Math.abs(sidebarScrollAfter - sidebarScrollBefore)).toBeLessThan(1);
 	await sidebar.evaluate(element => { element.scrollTop = 0; });
+	const problemFeedsButton = page.getByRole('button', { name: '1 problem feed', exact: true });
+	await expect(problemFeedsButton).toBeVisible();
+	await problemFeedsButton.click();
+	const problemFeedsDialog = page.getByRole('dialog', { name: 'Problem feeds' });
+	await expect(problemFeedsDialog).toContainText('Scroll test feed');
+	await expect(problemFeedsDialog).toContainText('404 Not Found');
+	await problemFeedsDialog.getByRole('button', { name: 'Edit', exact: true }).click();
+	const feedSettingsDialogFromProblem = page.getByRole('dialog', { name: 'Feed settings' });
+	await expect(feedSettingsDialogFromProblem.getByLabel('Feed URL')).toHaveValue('https://example.com/feed.xml');
+	await feedSettingsDialogFromProblem.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await problemFeedsButton.click();
+	await problemFeedsDialog.getByRole('button', { name: 'Retry', exact: true }).click();
+	await expect(problemFeedsDialog).toContainText('No feeds currently have update problems.');
+	await expect(problemFeedsButton).toBeHidden();
+	await problemFeedsDialog.getByRole('button', { name: 'Close', exact: true }).click();
 
   const layout = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,
@@ -231,7 +281,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
   await page.getByRole('button', { name: 'Add feed', exact: true }).click();
   const addDialog = page.getByRole('dialog', { name: 'Add feed' });
   await expect(addDialog).toBeVisible();
-  await expect(page.getByLabel('Feed URL')).toBeFocused();
+  await expect(addDialog.getByLabel('Feed URL')).toBeFocused();
   await addDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(addDialog).toBeHidden();
 
@@ -242,6 +292,12 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(page.getByLabel('Maximum articles per feed')).toHaveAttribute('step', '1');
 	expect(await page.getByLabel('Maximum articles per feed').evaluate(input => input.checkValidity())).toBe(true);
 	await expect(page.getByLabel('Check for new feedss releases')).toBeChecked();
+	await expect(settingsDialog.locator('.user-row').first()).toContainText('admin');
+	await expect(settingsDialog.locator('.user-row').first()).toContainText('Administrator');
+	await settingsDialog.getByLabel('Username').fill('new-reader');
+	await settingsDialog.getByLabel('Temporary password').fill('temporary-pass');
+	await settingsDialog.getByRole('button', { name: 'Add user', exact: true }).click();
+	await expect(settingsDialog.locator('.user-row').filter({ hasText: 'new-reader' })).toContainText('Temporary password');
 	await settingsDialog.getByLabel('Release notifications').selectOption('prerelease');
 	await settingsDialog.getByRole('button', { name: 'Refresh now', exact: true }).click();
 	await expect(settingsDialog.getByRole('status')).toHaveText('Updated 2 feeds.');
@@ -345,4 +401,52 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
     path: testInfo.outputPath(`feedss-${testInfo.project.name}.png`),
     fullPage: false,
   });
+});
+
+test('temporary users must choose a permanent password', async ({ page }, testInfo) => {
+	await login(page);
+	await page.getByRole('button', { name: 'Settings', exact: true }).click();
+	const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
+	const username = `reader-${testInfo.project.name}`;
+	await settingsDialog.getByLabel('Username').fill(username);
+	await settingsDialog.getByLabel('Temporary password').fill('temporary-pass');
+	await settingsDialog.getByRole('button', { name: 'Add user', exact: true }).click();
+	await expect(settingsDialog.locator('.user-row').filter({ hasText: username })).toContainText('Temporary password');
+	await settingsDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await page.getByRole('link', { name: 'Log out', exact: true }).click();
+
+	await page.getByLabel('Username').fill(username);
+	await page.getByLabel('Password').fill('temporary-pass');
+	await Promise.all([
+		page.waitForURL('/change-password'),
+		page.getByRole('button', { name: 'Sign in', exact: true }).click(),
+	]);
+	await expect(page.getByRole('heading', { name: 'Choose your password', exact: true })).toBeVisible();
+	await page.getByLabel('New password', { exact: true }).fill('permanent-pass');
+	await page.getByLabel('Confirm new password').fill('permanent-pass');
+	await Promise.all([
+		page.waitForURL('/'),
+		page.getByRole('button', { name: 'Save password', exact: true }).click(),
+	]);
+	await expect(page.locator('#feed-header')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Account', exact: true }).click();
+	const accountDialog = page.getByRole('dialog', { name: 'Account' });
+	await expect(accountDialog.getByLabel('Username')).toHaveValue(username);
+	const renamedUsername = `${username}-renamed`;
+	await accountDialog.getByLabel('Username').fill(renamedUsername);
+	await accountDialog.getByLabel('Current password').fill('permanent-pass');
+	await accountDialog.getByLabel('New password (leave blank to keep it)', { exact: true }).fill('updated-pass');
+	await accountDialog.getByLabel('Confirm new password').fill('updated-pass');
+	await accountDialog.getByRole('button', { name: 'Save account', exact: true }).click();
+	await expect(accountDialog).toBeHidden();
+	await expect(page.locator('#status-message')).toHaveText('Account updated.');
+	await page.getByRole('link', { name: 'Log out', exact: true }).click();
+	await page.getByLabel('Username').fill(renamedUsername);
+	await page.getByLabel('Password').fill('updated-pass');
+	await Promise.all([
+		page.waitForURL('/'),
+		page.getByRole('button', { name: 'Sign in', exact: true }).click(),
+	]);
+	await expect(page.locator('#feed-header')).toBeVisible();
 });

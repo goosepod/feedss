@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mmcdole/gofeed"
+	"golang.org/x/crypto/bcrypt"
 	xhtml "golang.org/x/net/html"
 	_ "modernc.org/sqlite"
 )
@@ -49,11 +50,12 @@ type AppConfig struct {
 
 // User stores local account info.
 type User struct {
-	ID        int64
-	Username  string
-	Password  string
-	IsAdmin   bool
-	CreatedAt string
+	ID                 int64  `json:"id"`
+	Username           string `json:"username"`
+	Password           string `json:"-"`
+	IsAdmin            bool   `json:"is_admin"`
+	MustChangePassword bool   `json:"must_change_password"`
+	CreatedAt          string `json:"created_at"`
 }
 
 // FeedGroup groups feeds in the UI.
@@ -69,16 +71,19 @@ type FeedGroup struct {
 
 // Feed defines a feed source.
 type Feed struct {
-	ID            int64  `json:"id"`
-	Title         string `json:"title"`
-	URL           string `json:"url"`
-	GroupID       int64  `json:"group_id"`
-	DisplayMode   string `json:"display_mode"`
-	SortDirection string `json:"sort_direction"`
-	CreatedBy     int64  `json:"created_by"`
-	CreatedAt     string `json:"created_at"`
-	UnreadCount   int    `json:"unread_count"`
-	Selected      bool   `json:"selected"`
+	ID                      int64  `json:"id"`
+	Title                   string `json:"title"`
+	URL                     string `json:"url"`
+	GroupID                 int64  `json:"group_id"`
+	DisplayMode             string `json:"display_mode"`
+	SortDirection           string `json:"sort_direction"`
+	CreatedBy               int64  `json:"created_by"`
+	CreatedAt               string `json:"created_at"`
+	UnreadCount             int    `json:"unread_count"`
+	LastRefreshError        string `json:"last_refresh_error"`
+	LastRefreshAt           string `json:"last_refresh_at"`
+	LastSuccessfulRefreshAt string `json:"last_successful_refresh_at"`
+	Selected                bool   `json:"selected"`
 }
 
 // Article describes a feed item.
@@ -171,7 +176,23 @@ func main() {
 		log.Fatal(err)
 	}
 	defer app.db.Close()
-	if !strings.EqualFold(getenv("APP_DISABLE_AUTO_REFRESH", "false"), "true") {
+	autoRefreshAllowed := !strings.EqualFold(getenv("APP_DISABLE_AUTO_REFRESH", "false"), "true")
+	refreshInterval := 15
+	autoRefreshEnabled := autoRefreshAllowed
+	if settings, settingsErr := app.getSettings(); settingsErr == nil {
+		if settings.RefreshIntervalMin > 0 {
+			refreshInterval = settings.RefreshIntervalMin
+		}
+		autoRefreshEnabled = autoRefreshAllowed && settings.AutoRefreshEnabled
+	}
+	fmt.Print(startupBanner(cfg, autoRefreshEnabled, refreshInterval))
+	log.Printf("Database initialized: %s", cfg.DBPath)
+	if autoRefreshEnabled {
+		log.Printf("Background refresh enabled (every %d minutes)", refreshInterval)
+	} else {
+		log.Printf("Background refresh disabled")
+	}
+	if autoRefreshAllowed {
 		go app.startBackgroundRefreshLoop()
 	}
 
@@ -179,10 +200,13 @@ func main() {
 	mux.HandleFunc("/", app.handleIndex)
 	mux.HandleFunc("/login", app.handleLogin)
 	mux.HandleFunc("/logout", app.handleLogout)
+	mux.HandleFunc("/change-password", app.handleChangePassword)
+	mux.HandleFunc("/api/account", app.handleAccountAPI)
 	mux.HandleFunc("/feed/add", app.handleAddFeed)
 	mux.HandleFunc("/api/groups", app.handleGroupsAPI)
 	mux.HandleFunc("/api/feeds", app.handleFeedsAPI)
 	mux.HandleFunc("/api/feeds/update", app.handleUpdateFeedAPI)
+	mux.HandleFunc("/api/feeds/delete", app.handleDeleteFeedAPI)
 	mux.HandleFunc("/api/articles", app.handleArticlesAPI)
 	mux.HandleFunc("/api/articles/read", app.handleArticleReadAPI)
 	mux.HandleFunc("/api/image", app.handleImageProxy)
@@ -190,6 +214,7 @@ func main() {
 	mux.HandleFunc("/api/refresh", app.handleRefreshAPI)
 	mux.HandleFunc("/api/settings", app.handleSettingsAPI)
 	mux.HandleFunc("/api/releases/check", app.handleReleaseCheckAPI)
+	mux.HandleFunc("/api/users", app.handleUsersAPI)
 	mux.HandleFunc("/api/import-opml", app.handleImportOPML)
 	mux.HandleFunc("/api/export-opml", app.handleExportOPML)
 	staticHandler := http.FileServer(http.FS(staticFS))
@@ -198,8 +223,36 @@ func main() {
 		staticHandler.ServeHTTP(w, r)
 	}))
 
-	log.Printf("Starting feedss %s on :%s", version, cfg.Port)
+	log.Printf("Listening for HTTP requests at http://0.0.0.0:%s", cfg.Port)
+	log.Printf("feedss is ready")
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, app.requireAuth(mux)))
+}
+
+func startupBanner(cfg AppConfig, autoRefreshEnabled bool, refreshInterval int) string {
+	refreshStatus := "disabled"
+	if autoRefreshEnabled {
+		refreshStatus = fmt.Sprintf("enabled, every %d minutes", refreshInterval)
+	}
+	return fmt.Sprintf(`
+  ███████╗███████╗███████╗██████╗ ███████╗███████╗
+  ██╔════╝██╔════╝██╔════╝██╔══██╗██╔════╝██╔════╝
+  █████╗  █████╗  █████╗  ██║  ██║███████╗███████╗
+  ██╔══╝  ██╔══╝  ██╔══╝  ██║  ██║╚════██║╚════██║
+  ██║     ███████╗███████╗██████╔╝███████║███████║
+  ╚═╝     ╚══════╝╚══════╝╚═════╝ ╚══════╝╚══════╝
+
+  A small, self-hosted RSS reader
+
+  Version:        %s
+  Database:       %s
+  Listen address: http://0.0.0.0:%s
+  Auto refresh:   %s
+
+  Web:     http://localhost:%s
+  GitHub:  https://github.com/goosepod/feedss
+  License: GPL-3.0
+
+`, version, cfg.DBPath, cfg.Port, refreshStatus, cfg.Port)
 }
 
 func getenv(key, fallback string) string {
@@ -237,9 +290,6 @@ func NewApp(cfg AppConfig) (*App, error) {
 	if err := maintainStoredArticles(db); err != nil {
 		return nil, err
 	}
-	if err := ensureAdminUser(db); err != nil {
-		return nil, err
-	}
 	if err := ensureAppSettings(db); err != nil {
 		return nil, err
 	}
@@ -255,6 +305,7 @@ func initSchema(db *sql.DB) error {
 			username TEXT NOT NULL UNIQUE,
 			password TEXT NOT NULL,
 			is_admin INTEGER NOT NULL DEFAULT 0,
+			must_change_password INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		);`,
 		`CREATE TABLE IF NOT EXISTS groups (
@@ -273,6 +324,9 @@ func initSchema(db *sql.DB) error {
 			sort_direction TEXT NOT NULL DEFAULT 'desc',
 			created_by INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			last_refresh_error TEXT NOT NULL DEFAULT '',
+			last_refresh_at TEXT,
+			last_successful_refresh_at TEXT,
 			FOREIGN KEY(group_id) REFERENCES groups(id),
 			FOREIGN KEY(created_by) REFERENCES users(id)
 		);`,
@@ -315,28 +369,6 @@ func initSchema(db *sql.DB) error {
 		}
 	}
 	return runMigrations(db)
-}
-
-func ensureAdminUser(db *sql.DB) error {
-	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-
-	app := &App{db: db}
-	user, err := app.createUser("admin", "admin123", true)
-	if err != nil {
-		return err
-	}
-	app.ensureGroup(user.ID, "Inbox")
-	if _, err := db.Exec(
-		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases) VALUES(1, 15, 500, 'headline', 'desc', 1, 1, 0)"); err != nil {
-		return err
-	}
-	return nil
 }
 
 func ensureAppSettings(db *sql.DB) error {
@@ -412,11 +444,20 @@ func (app *App) refreshAllFeeds() error {
 }
 
 func (app *App) createUser(username, password string, isAdmin bool) (*User, error) {
+	return app.createUserWithPasswordState(username, password, isAdmin, false)
+}
+
+func (app *App) createUserWithPasswordState(username, password string, isAdmin, mustChangePassword bool) (*User, error) {
+	passwordHash, err := hashPassword(password)
+	if err != nil {
+		return nil, err
+	}
 	res, err := app.db.Exec(
-		"INSERT INTO users(username, password, is_admin) VALUES(?, ?, ?)",
+		"INSERT INTO users(username, password, is_admin, must_change_password) VALUES(?, ?, ?, ?)",
 		username,
-		password,
+		passwordHash,
 		boolToInt(isAdmin),
+		boolToInt(mustChangePassword),
 	)
 	if err != nil {
 		return nil, err
@@ -425,7 +466,7 @@ func (app *App) createUser(username, password string, isAdmin bool) (*User, erro
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Username: username, Password: password, IsAdmin: isAdmin}, nil
+	return &User{ID: id, Username: username, Password: passwordHash, IsAdmin: isAdmin, MustChangePassword: mustChangePassword}, nil
 }
 
 func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -435,9 +476,16 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := struct {
-		Title string
+		Title   string
+		IsAdmin bool
 	}{
-		Title: "feedss",
+		Title:   "feedss",
+		IsAdmin: false,
+	}
+	if session, ok := getSession(r); ok {
+		if user, err := app.userByID(session.ID); err == nil {
+			page.IsAdmin = user.IsAdmin
+		}
 	}
 	if err := app.tmpl.ExecuteTemplate(w, "index.html", page); err != nil {
 		log.Printf("template error: %v", err)
@@ -445,8 +493,13 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	setup, err := app.needsInitialAdmin()
+	if err != nil {
+		http.Error(w, "login failed", http.StatusInternalServerError)
+		return
+	}
 	if r.Method == http.MethodGet {
-		if err := app.tmpl.ExecuteTemplate(w, "login.html", nil); err != nil {
+		if err := app.tmpl.ExecuteTemplate(w, "login.html", struct{ Setup bool }{Setup: setup}); err != nil {
 			log.Printf("template error: %v", err)
 		}
 		return
@@ -466,8 +519,17 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username and password are required", http.StatusBadRequest)
 		return
 	}
+	if setup && len([]byte(password)) > 72 {
+		http.Error(w, "password must be 72 bytes or fewer", http.StatusBadRequest)
+		return
+	}
 
-	user, err := app.lookupUser(username, password)
+	var user *User
+	if setup {
+		user, err = app.createInitialAdmin(username, password)
+	} else {
+		user, err = app.lookupUser(username, password)
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
@@ -478,7 +540,53 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setSession(w, user)
+	if user.MustChangePassword {
+		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (app *App) needsInitialAdmin() (bool, error) {
+	var count int
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 0, nil
+}
+
+func (app *App) createInitialAdmin(username, password string) (*User, error) {
+	passwordHash, err := hashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := app.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return nil, err
+	}
+	if count != 0 {
+		return nil, errors.New("administrator already exists")
+	}
+	result, err := tx.Exec("INSERT INTO users(username, password, is_admin, must_change_password) VALUES(?, ?, 1, 0)", username, passwordHash)
+	if err != nil {
+		return nil, err
+	}
+	userID, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec("INSERT INTO groups(name, created_by) VALUES('Inbox', ?)", userID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &User{ID: userID, Username: username, Password: passwordHash, IsAdmin: true}, nil
 }
 
 func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -489,14 +597,157 @@ func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (app *App) lookupUser(username, password string) (*User, error) {
 	var user User
 	err := app.db.QueryRow(
-		"SELECT id, username, password, is_admin, created_at FROM users WHERE username = ? AND password = ?",
+		"SELECT id, username, password, is_admin, must_change_password, created_at FROM users WHERE username = ?",
 		username,
-		password,
-	).Scan(&user.ID, &user.Username, &user.Password, &user.IsAdmin, &user.CreatedAt)
+	).Scan(&user.ID, &user.Username, &user.Password, &user.IsAdmin, &user.MustChangePassword, &user.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	if strings.HasPrefix(user.Password, "$2") {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+			return nil, sql.ErrNoRows
+		}
+	} else {
+		if user.Password != password {
+			return nil, sql.ErrNoRows
+		}
+		if passwordHash, hashErr := hashPassword(password); hashErr == nil {
+			if _, updateErr := app.db.Exec("UPDATE users SET password = ? WHERE id = ?", passwordHash, user.ID); updateErr == nil {
+				user.Password = passwordHash
+			}
+		}
+	}
 	return &user, nil
+}
+
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func (app *App) userByID(userID int64) (*User, error) {
+	var user User
+	if err := app.db.QueryRow(
+		"SELECT id, username, password, is_admin, must_change_password, created_at FROM users WHERE id = ?", userID,
+	).Scan(&user.ID, &user.Username, &user.Password, &user.IsAdmin, &user.MustChangePassword, &user.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (app *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	session, ok := getSession(r)
+	if !ok || session == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	user, err := app.userByID(session.ID)
+	if err != nil {
+		clearSession(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if r.Method == http.MethodGet {
+		if !user.MustChangePassword {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		if err := app.tmpl.ExecuteTemplate(w, "change-password.html", user); err != nil {
+			log.Printf("template error: %v", err)
+		}
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	newPassword := r.FormValue("new_password")
+	confirmation := r.FormValue("confirm_password")
+	if newPassword == "" || newPassword != confirmation {
+		http.Error(w, "passwords must be non-empty and match", http.StatusBadRequest)
+		return
+	}
+	if len([]byte(newPassword)) > 72 {
+		http.Error(w, "password must be 72 bytes or fewer", http.StatusBadRequest)
+		return
+	}
+	passwordHash, err := hashPassword(newPassword)
+	if err != nil {
+		http.Error(w, "failed to change password", http.StatusInternalServerError)
+		return
+	}
+	if _, err := app.db.Exec("UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?", passwordHash, user.ID); err != nil {
+		http.Error(w, "failed to change password", http.StatusInternalServerError)
+		return
+	}
+	user.MustChangePassword = false
+	setSession(w, user)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (app *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) {
+	session, ok := getSession(r)
+	if !ok || session == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	user, err := app.userByID(session.ID)
+	if err != nil {
+		http.Error(w, "account not found", http.StatusNotFound)
+		return
+	}
+	if r.Method == http.MethodGet {
+		jsonSuccess(w, user)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	currentPassword := r.FormValue("current_password")
+	newPassword := r.FormValue("new_password")
+	confirmation := r.FormValue("confirm_password")
+	if username == "" || currentPassword == "" {
+		http.Error(w, "username and current password are required", http.StatusBadRequest)
+		return
+	}
+	authenticated, err := app.lookupUser(user.Username, currentPassword)
+	if err != nil {
+		http.Error(w, "current password is incorrect", http.StatusUnauthorized)
+		return
+	}
+	passwordHash := authenticated.Password
+	if newPassword != "" {
+		if newPassword != confirmation {
+			http.Error(w, "new passwords do not match", http.StatusBadRequest)
+			return
+		}
+		if len([]byte(newPassword)) > 72 {
+			http.Error(w, "password must be 72 bytes or fewer", http.StatusBadRequest)
+			return
+		}
+		passwordHash, err = hashPassword(newPassword)
+		if err != nil {
+			http.Error(w, "failed to update account", http.StatusInternalServerError)
+			return
+		}
+	}
+	if _, err := app.db.Exec("UPDATE users SET username = ?, password = ? WHERE id = ?", username, passwordHash, user.ID); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			http.Error(w, "username already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "failed to update account", http.StatusInternalServerError)
+		return
+	}
+	user.Username = username
+	user.Password = passwordHash
+	setSession(w, user)
+	jsonSuccess(w, user)
 }
 
 func (app *App) requireAuth(next http.Handler) http.Handler {
@@ -505,13 +756,23 @@ func (app *App) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		user, ok := getSession(r)
+		session, ok := getSession(r)
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
-		if user == nil {
+		if session == nil {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		user, err := app.userByID(session.ID)
+		if err != nil {
+			clearSession(w)
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if user.MustChangePassword && r.URL.Path != "/change-password" {
+			http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -832,6 +1093,31 @@ func normalizeArticleTitle(rawTitle string) string {
 }
 
 func (app *App) refreshFeed(userID int64, feedID int64) error {
+	err := app.refreshFeedContent(userID, feedID)
+	refreshedAt := time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		message := err.Error()
+		if len(message) > 2000 {
+			message = message[:2000]
+		}
+		if _, statusErr := app.db.Exec(
+			"UPDATE feeds SET last_refresh_error = ?, last_refresh_at = ? WHERE id = ? AND created_by = ?",
+			message, refreshedAt, feedID, userID,
+		); statusErr != nil {
+			log.Printf("record refresh failure for feed %d: %v", feedID, statusErr)
+		}
+		return err
+	}
+	if _, statusErr := app.db.Exec(
+		"UPDATE feeds SET last_refresh_error = '', last_refresh_at = ?, last_successful_refresh_at = ? WHERE id = ? AND created_by = ?",
+		refreshedAt, refreshedAt, feedID, userID,
+	); statusErr != nil {
+		return fmt.Errorf("record successful refresh: %w", statusErr)
+	}
+	return nil
+}
+
+func (app *App) refreshFeedContent(userID int64, feedID int64) error {
 	var feed Feed
 	err := app.db.QueryRow(
 		"SELECT id, title, url, group_id, display_mode, sort_direction, created_by, created_at FROM feeds WHERE id = ? AND created_by = ?",
@@ -1026,16 +1312,28 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	feedID := strings.TrimSpace(r.FormValue("feed_id"))
+	feedURL := strings.TrimSpace(r.FormValue("url"))
 	displayMode := strings.TrimSpace(r.FormValue("display_mode"))
 	sortDirection := strings.TrimSpace(r.FormValue("sort_direction"))
 	validDisplayModes := map[string]bool{"headline": true, "headline-blurb": true, "full": true}
-	if feedID == "" || !validDisplayModes[displayMode] || (sortDirection != "asc" && sortDirection != "desc") {
+	if feedURL == "" && feedID != "" {
+		if err := app.db.QueryRow("SELECT url FROM feeds WHERE id = ? AND created_by = ?", feedID, user.ID).Scan(&feedURL); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "feed not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to load feed", http.StatusInternalServerError)
+			return
+		}
+	}
+	parsedURL, urlErr := url.Parse(feedURL)
+	if feedID == "" || urlErr != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || !validDisplayModes[displayMode] || (sortDirection != "asc" && sortDirection != "desc") {
 		http.Error(w, "invalid feed settings", http.StatusBadRequest)
 		return
 	}
 	result, err := app.db.Exec(
-		"UPDATE feeds SET display_mode = ?, sort_direction = ? WHERE id = ? AND created_by = ?",
-		displayMode, sortDirection, feedID, user.ID,
+		"UPDATE feeds SET url = ?, display_mode = ?, sort_direction = ? WHERE id = ? AND created_by = ?",
+		feedURL, displayMode, sortDirection, feedID, user.ID,
 	)
 	if err != nil {
 		log.Printf("update feed settings: %v", err)
@@ -1047,7 +1345,51 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed not found", http.StatusNotFound)
 		return
 	}
-	jsonSuccess(w, map[string]string{"status": "ok", "display_mode": displayMode, "sort_direction": sortDirection})
+	jsonSuccess(w, map[string]string{"status": "ok", "url": feedURL, "display_mode": displayMode, "sort_direction": sortDirection})
+}
+
+func (app *App) handleDeleteFeedAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	feedID := strings.TrimSpace(r.FormValue("feed_id"))
+	if feedID == "" {
+		http.Error(w, "feed_id is required", http.StatusBadRequest)
+		return
+	}
+	tx, err := app.db.Begin()
+	if err != nil {
+		http.Error(w, "failed to remove feed", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM articles WHERE feed_id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)", feedID, user.ID); err != nil {
+		log.Printf("delete feed articles: %v", err)
+		http.Error(w, "failed to remove feed", http.StatusInternalServerError)
+		return
+	}
+	result, err := tx.Exec("DELETE FROM feeds WHERE id = ? AND created_by = ?", feedID, user.ID)
+	if err != nil {
+		log.Printf("delete feed: %v", err)
+		http.Error(w, "failed to remove feed", http.StatusInternalServerError)
+		return
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted == 0 {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "failed to remove feed", http.StatusInternalServerError)
+		return
+	}
+	jsonSuccess(w, map[string]string{"status": "ok"})
 }
 
 func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
@@ -1531,13 +1873,21 @@ func (app *App) handleRefreshAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	refreshed := 0
 	failed := 0
+	requestedFeedID := strings.TrimSpace(r.FormValue("feed_id"))
 	for _, feed := range feeds {
+		if requestedFeedID != "" && strconv.FormatInt(feed.ID, 10) != requestedFeedID {
+			continue
+		}
 		if err := app.refreshFeed(user.ID, feed.ID); err != nil {
 			log.Printf("manual refresh feed %d: %v", feed.ID, err)
 			failed++
 			continue
 		}
 		refreshed++
+	}
+	if requestedFeedID != "" && refreshed == 0 && failed == 0 {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
 	}
 	jsonSuccess(w, map[string]int{"refreshed": refreshed, "failed": failed})
 }
@@ -1573,11 +1923,13 @@ func (app *App) listGroups(userID int64) ([]FeedGroup, error) {
 func (app *App) listFeeds(userID int64) ([]Feed, error) {
 	rows, err := app.db.Query(
 		`SELECT f.id, f.title, f.url, f.group_id, f.display_mode, f.sort_direction, f.created_by, f.created_at,
-			COALESCE(SUM(CASE WHEN a.is_read = 0 THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN a.is_read = 0 THEN 1 ELSE 0 END), 0), COALESCE(f.last_refresh_error, ''),
+			COALESCE(f.last_refresh_at, ''), COALESCE(f.last_successful_refresh_at, '')
 		FROM feeds f
 		LEFT JOIN articles a ON a.feed_id = f.id
 		WHERE f.created_by = ?
-		GROUP BY f.id, f.title, f.url, f.group_id, f.display_mode, f.sort_direction, f.created_by, f.created_at
+		GROUP BY f.id, f.title, f.url, f.group_id, f.display_mode, f.sort_direction, f.created_by, f.created_at,
+			f.last_refresh_error, f.last_refresh_at, f.last_successful_refresh_at
 		ORDER BY f.title COLLATE NOCASE ASC`,
 		userID,
 	)
@@ -1589,7 +1941,10 @@ func (app *App) listFeeds(userID int64) ([]Feed, error) {
 	feeds := make([]Feed, 0)
 	for rows.Next() {
 		var f Feed
-		if err := rows.Scan(&f.ID, &f.Title, &f.URL, &f.GroupID, &f.DisplayMode, &f.SortDirection, &f.CreatedBy, &f.CreatedAt, &f.UnreadCount); err != nil {
+		if err := rows.Scan(
+			&f.ID, &f.Title, &f.URL, &f.GroupID, &f.DisplayMode, &f.SortDirection, &f.CreatedBy,
+			&f.CreatedAt, &f.UnreadCount, &f.LastRefreshError, &f.LastRefreshAt, &f.LastSuccessfulRefreshAt,
+		); err != nil {
 			return nil, err
 		}
 		feeds = append(feeds, f)
@@ -1861,6 +2216,93 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonSuccess(w, settings)
+}
+
+func (app *App) handleUsersAPI(w http.ResponseWriter, r *http.Request) {
+	session, ok := getSession(r)
+	if !ok || session == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	admin, err := app.userByID(session.ID)
+	if err != nil || !admin.IsAdmin {
+		http.Error(w, "admin required", http.StatusForbidden)
+		return
+	}
+	if r.Method == http.MethodGet {
+		rows, err := app.db.Query("SELECT id, username, is_admin, must_change_password, created_at FROM users ORDER BY username COLLATE NOCASE")
+		if err != nil {
+			http.Error(w, "failed to load users", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		users := make([]User, 0)
+		for rows.Next() {
+			var user User
+			if err := rows.Scan(&user.ID, &user.Username, &user.IsAdmin, &user.MustChangePassword, &user.CreatedAt); err != nil {
+				http.Error(w, "failed to load users", http.StatusInternalServerError)
+				return
+			}
+			users = append(users, user)
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "failed to load users", http.StatusInternalServerError)
+			return
+		}
+		jsonSuccess(w, users)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	username := strings.TrimSpace(r.FormValue("username"))
+	temporaryPassword := r.FormValue("temporary_password")
+	if username == "" || temporaryPassword == "" {
+		http.Error(w, "username and temporary password are required", http.StatusBadRequest)
+		return
+	}
+	if len([]byte(temporaryPassword)) > 72 {
+		http.Error(w, "temporary password must be 72 bytes or fewer", http.StatusBadRequest)
+		return
+	}
+	passwordHash, err := hashPassword(temporaryPassword)
+	if err != nil {
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	tx, err := app.db.Begin()
+	if err != nil {
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
+		"INSERT INTO users(username, password, is_admin, must_change_password) VALUES(?, ?, 0, 1)",
+		username, passwordHash,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			http.Error(w, "username already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	userID, err := result.LastInsertId()
+	if err != nil {
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	if _, err := tx.Exec("INSERT INTO groups(name, created_by) VALUES('Inbox', ?)", userID); err != nil {
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		return
+	}
+	jsonSuccess(w, User{ID: userID, Username: username, MustChangePassword: true})
 }
 
 func defaultAppSettings() *AppSettings {

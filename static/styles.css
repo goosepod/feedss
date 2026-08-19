@@ -44,6 +44,16 @@ button, .button {
 
 button:hover, .button:hover { background: var(--primary-hover); }
 
+.button-warning {
+  border-color: #c37b13;
+  background: #fff4d8;
+  color: #674800;
+}
+
+.button-warning:hover { background: #ffe7af; }
+.button-danger { border-color: var(--danger); background: var(--danger); }
+.button-danger:hover { background: #821515; }
+
 button:focus-visible, .button:focus-visible, input:focus-visible,
 select:focus-visible, a:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--focus) 35%, transparent);
@@ -197,6 +207,8 @@ button:disabled { opacity: .48; cursor: default; }
 
 .feed-item { min-height: 36px; padding: 6px 9px; font-size: .94rem; }
 .feed-item > span:first-child { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.feed-item.has-error { color: #7b3507; }
+.feed-warning { color: #b4540a; font-size: 1rem; line-height: 1; }
 
 .group-item:hover, .feed-item:hover {
   border-color: var(--border);
@@ -351,7 +363,7 @@ dialog {
 dialog::backdrop { background: rgba(18, 24, 31, .48); }
 dialog form { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 22px; }
 dialog h2 { margin: 0 0 8px; font-size: 1.35rem; }
-.shortcuts-dialog, .release-dialog, .confirmation-dialog { padding: 22px; }
+.shortcuts-dialog, .release-dialog, .confirmation-dialog, .problem-feeds-dialog { padding: 22px; }
 .release-dialog p, .confirmation-dialog p { margin: 0; color: var(--muted); }
 .confirmation-dialog .dialog-note { margin-top: 8px; font-size: .9rem; }
 .shortcut-list { margin: 14px 0 0; }
@@ -376,6 +388,7 @@ kbd {
 }
 .dialog-subtitle { margin: -4px 0 4px; color: var(--muted); }
 dialog label:not(.checkbox-row) { margin-top: 8px; font-weight: 650; }
+.label-note { color: var(--muted); font-size: .86rem; font-weight: 500; }
 
 input, select, textarea {
   width: 100%;
@@ -395,6 +408,26 @@ input, select, textarea {
 .dialog-actions .refresh-now { margin-right: auto; }
 .form-error { margin: 8px 0 0; color: var(--danger); }
 .form-result { margin: 8px 0 0; color: #275844; }
+.problem-feeds-list { display: grid; gap: 12px; margin-top: 18px; }
+.problem-feed {
+  padding: 14px;
+  border: 1px solid #e0ba75;
+  border-radius: 5px;
+  background: #fffaf0;
+}
+.problem-feed h3 { margin: 0; font-size: 1rem; }
+.problem-feed-url { margin: 2px 0 8px; color: var(--muted); font-size: .86rem; overflow-wrap: anywhere; }
+.problem-feed-error { margin: 0; color: #7b3507; font-size: .92rem; overflow-wrap: anywhere; }
+.problem-feed-time { margin: 6px 0 0; color: var(--muted); font-size: .82rem; }
+.problem-feed-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.problem-feed-actions button { min-height: 34px; padding: 5px 10px; font-size: .88rem; }
+.user-management { display: grid; gap: 8px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+.user-management h3 { margin: 0; font-size: 1.05rem; }
+.user-management > p { margin: 0 0 4px; color: var(--muted); font-size: .9rem; }
+.user-list { display: grid; gap: 4px; margin-bottom: 4px; }
+.user-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 9px; border-radius: 4px; background: var(--surface-subtle); }
+.user-state { color: var(--muted); font-size: .86rem; }
+#add-user-account-btn { justify-self: start; }
 
 .login-page {
   min-height: 100vh;

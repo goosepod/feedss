@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,13 +34,25 @@ func TestAPIModelsUseBrowserFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	jsonText := string(payload)
-	for _, field := range []string{"\"id\"", "\"feed_count\"", "\"unread_count\"", "\"group_id\"", "\"display_mode\"", "\"feed_title\"", "\"comments_link\"", "\"is_read\"", "\"refresh_interval_min\"", "\"auto_refresh_enabled\"", "\"release_check_enabled\"", "\"release_check_include_prereleases\""} {
+	for _, field := range []string{"\"id\"", "\"feed_count\"", "\"unread_count\"", "\"group_id\"", "\"display_mode\"", "\"last_refresh_error\"", "\"feed_title\"", "\"comments_link\"", "\"is_read\"", "\"refresh_interval_min\"", "\"auto_refresh_enabled\"", "\"release_check_enabled\"", "\"release_check_include_prereleases\""} {
 		if !strings.Contains(jsonText, field) {
 			t.Fatalf("expected API JSON to contain %s, got %s", field, jsonText)
 		}
 	}
 	if strings.Contains(jsonText, "\"ID\"") || strings.Contains(jsonText, "\"GroupID\"") {
 		t.Fatalf("API JSON leaked Go field names: %s", jsonText)
+	}
+}
+
+func TestStartupBannerIncludesRuntimeInformation(t *testing.T) {
+	previousVersion := version
+	version = "v1.2.3"
+	defer func() { version = previousVersion }()
+	banner := startupBanner(AppConfig{DBPath: "/data/feedss.db", Port: "4317"}, true, 15)
+	for _, text := range []string{"███████╗", "Version:        v1.2.3", "Database:       /data/feedss.db", "http://0.0.0.0:4317", "enabled, every 15 minutes", "https://github.com/goosepod/feedss", "GPL-3.0"} {
+		if !strings.Contains(banner, text) {
+			t.Fatalf("startup banner missing %q:\n%s", text, banner)
+		}
 	}
 }
 
@@ -456,6 +470,108 @@ func TestManualRefreshWithNoFeeds(t *testing.T) {
 	}
 }
 
+func TestFeedRefreshStatusTracksFailureAndRecovery(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID := app.ensureGroup(user.ID, "Inbox")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		fmt.Fprint(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>Working feed</title><item><title>Item</title><link>https://example.com/item</link><guid>item-1</guid></item></channel></rss>`)
+	}))
+	result, err := db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES('Example', ?, ?, ?)", server.URL, groupID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := result.LastInsertId()
+	if err := app.refreshFeed(user.ID, feedID); err != nil {
+		t.Fatalf("successful refresh failed: %v", err)
+	}
+	server.Close()
+	if err := app.refreshFeed(user.ID, feedID); err == nil {
+		t.Fatal("expected refresh against closed server to fail")
+	}
+	feeds, err := app.listFeeds(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 || feeds[0].LastRefreshError == "" || feeds[0].LastRefreshAt == "" || feeds[0].LastSuccessfulRefreshAt == "" {
+		t.Fatalf("unexpected failed refresh status: %#v", feeds)
+	}
+
+	recovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		fmt.Fprint(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>Recovered feed</title></channel></rss>`)
+	}))
+	defer recovery.Close()
+	if _, err := db.Exec("UPDATE feeds SET url = ? WHERE id = ?", recovery.URL, feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.refreshFeed(user.ID, feedID); err != nil {
+		t.Fatalf("recovery refresh failed: %v", err)
+	}
+	feeds, err = app.listFeeds(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feeds[0].LastRefreshError != "" {
+		t.Fatalf("successful refresh did not clear error: %#v", feeds[0])
+	}
+}
+
+func TestDeleteFeedRemovesItsArticles(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID := app.ensureGroup(user.ID, "Inbox")
+	result, err := db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES('Gone', 'https://example.com/rss', ?, ?)", groupID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := result.LastInsertId()
+	if _, err := db.Exec("INSERT INTO articles(feed_id, title, guid) VALUES(?, 'Old item', 'old-item')", feedID); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/feeds/delete", strings.NewReader(url.Values{"feed_id": {strconv.FormatInt(feedID, 10)}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	response := httptest.NewRecorder()
+	app.handleDeleteFeedAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+	var feedCount, articleCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM feeds WHERE id = ?", feedID).Scan(&feedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM articles WHERE feed_id = ?", feedID).Scan(&articleCount); err != nil {
+		t.Fatal(err)
+	}
+	if feedCount != 0 || articleCount != 0 {
+		t.Fatalf("expected feed and articles removed, feeds=%d articles=%d", feedCount, articleCount)
+	}
+}
+
 func TestSavingDefaultsDoesNotOverwriteExistingFeedSettings(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
 	if err != nil {
@@ -586,7 +702,7 @@ func TestDefaultSettingsUse500ArticleRetention(t *testing.T) {
 	if err := initSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureAdminUser(db); err != nil {
+	if err := ensureAppSettings(db); err != nil {
 		t.Fatal(err)
 	}
 
@@ -596,6 +712,163 @@ func TestDefaultSettingsUse500ArticleRetention(t *testing.T) {
 	}
 	if max != 500 {
 		t.Fatalf("expected default max articles per feed to be 500, got %d", max)
+	}
+}
+
+func TestFirstLoginCreatesAdministratorWithoutDefaultAccount(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	setup, err := app.needsInitialAdmin()
+	if err != nil || !setup {
+		t.Fatalf("expected first-run setup, setup=%v err=%v", setup, err)
+	}
+	form := url.Values{"username": {"owner"}, "password": {"chosen-password"}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	app.handleLogin(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/" {
+		t.Fatalf("unexpected response %d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	user, err := app.lookupUser("owner", "chosen-password")
+	if err != nil || !user.IsAdmin || user.MustChangePassword {
+		t.Fatalf("unexpected initial administrator: %#v err=%v", user, err)
+	}
+	var inboxCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM groups WHERE created_by = ? AND name = 'Inbox'", user.ID).Scan(&inboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if inboxCount != 1 {
+		t.Fatalf("expected administrator Inbox group, got %d", inboxCount)
+	}
+}
+
+func TestTemporaryUserMustChooseNewPassword(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	admin, err := app.createUser("owner", "owner-password", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"username": {"reader"}, "temporary_password": {"temporary"}}
+	request := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(admin.ID, 10) + "|owner|1"})
+	response := httptest.NewRecorder()
+	app.handleUsersAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected create-user response %d: %s", response.Code, response.Body.String())
+	}
+	reader, err := app.lookupUser("reader", "temporary")
+	if err != nil || !reader.MustChangePassword || reader.IsAdmin {
+		t.Fatalf("unexpected temporary user: %#v err=%v", reader, err)
+	}
+
+	protected := app.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(reader.ID, 10) + "|reader|0"})
+	response = httptest.NewRecorder()
+	protected.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/change-password" {
+		t.Fatalf("temporary user was not redirected to password change: %d %q", response.Code, response.Header().Get("Location"))
+	}
+
+	changeForm := url.Values{"new_password": {"permanent-password"}, "confirm_password": {"permanent-password"}}
+	request = httptest.NewRequest(http.MethodPost, "/change-password", strings.NewReader(changeForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(reader.ID, 10) + "|reader|0"})
+	response = httptest.NewRecorder()
+	app.handleChangePassword(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/" {
+		t.Fatalf("unexpected password-change response %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := app.lookupUser("reader", "temporary"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("temporary password still works: %v", err)
+	}
+	reader, err = app.lookupUser("reader", "permanent-password")
+	if err != nil || reader.MustChangePassword {
+		t.Fatalf("new password was not activated: %#v err=%v", reader, err)
+	}
+}
+
+func TestLegacyPlaintextPasswordIsUpgradedAfterLogin(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.Exec("INSERT INTO users(username, password, is_admin) VALUES('legacy', 'old-password', 1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, _ := result.LastInsertId()
+	app := &App{db: db}
+	if _, err := app.lookupUser("legacy", "old-password"); err != nil {
+		t.Fatalf("legacy login failed: %v", err)
+	}
+	var storedPassword string
+	if err := db.QueryRow("SELECT password FROM users WHERE id = ?", userID).Scan(&storedPassword); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(storedPassword, "$2") || storedPassword == "old-password" {
+		t.Fatalf("legacy password was not upgraded: %q", storedPassword)
+	}
+}
+
+func TestUserCanChangeUsernameAndPassword(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	user, err := app.createUser("reader", "old-password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"username":         {"renamed-reader"},
+		"current_password": {"old-password"},
+		"new_password":     {"new-password"},
+		"confirm_password": {"new-password"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/account", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	response := httptest.NewRecorder()
+	app.handleAccountAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected account response %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := app.lookupUser("reader", "old-password"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("old login still works: %v", err)
+	}
+	updated, err := app.lookupUser("renamed-reader", "new-password")
+	if err != nil || updated.ID != user.ID {
+		t.Fatalf("updated login failed: %#v err=%v", updated, err)
+	}
+	if cookies := response.Result().Cookies(); len(cookies) == 0 || !strings.Contains(cookies[0].Value, "renamed-reader") {
+		t.Fatalf("updated session cookie not returned: %#v", cookies)
 	}
 }
 

@@ -30,6 +30,32 @@ var migrations = []migration{
 			return ensureColumn(db, "app_settings", "release_check_include_prereleases", "INTEGER NOT NULL DEFAULT 0")
 		},
 	},
+	{
+		Version: 3,
+		Name:    "add_feed_refresh_status",
+		Apply: func(db *sql.DB) error {
+			for _, column := range []struct {
+				name       string
+				definition string
+			}{
+				{name: "last_refresh_error", definition: "TEXT NOT NULL DEFAULT ''"},
+				{name: "last_refresh_at", definition: "TEXT"},
+				{name: "last_successful_refresh_at", definition: "TEXT"},
+			} {
+				if err := ensureColumn(db, "feeds", column.name, column.definition); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		Version: 4,
+		Name:    "add_temporary_password_state",
+		Apply: func(db *sql.DB) error {
+			return ensureColumn(db, "users", "must_change_password", "INTEGER NOT NULL DEFAULT 0")
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

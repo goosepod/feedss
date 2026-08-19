@@ -26,8 +26,10 @@ const state = {
 	releaseCheckIncludePrereleases: false,
 	selectedArticleIndex: -1,
   articleRequest: 0,
-  expandedGroupIds: new Set(),
-  expandedArticleIds: new Set(),
+	expandedGroupIds: new Set(),
+	expandedArticleIds: new Set(),
+	feedPendingDeletion: null,
+	editingFeedId: null,
 };
 
 const elements = {};
@@ -64,6 +66,90 @@ async function fetchJson(url, options) {
 async function loadSettings() {
   const settings = await fetchJson('/api/settings');
 	applySettings(settings);
+}
+
+async function loadUsers() {
+	if (!elements.userList) return;
+	const users = await fetchJson('/api/users');
+	elements.userList.replaceChildren();
+	users.forEach(user => {
+		const row = document.createElement('div');
+		row.className = 'user-row';
+		const name = document.createElement('span');
+		name.textContent = user.username;
+		const stateLabel = document.createElement('span');
+		stateLabel.className = 'user-state';
+		stateLabel.textContent = user.is_admin ? 'Administrator' : (user.must_change_password ? 'Temporary password' : 'Active');
+		row.append(name, stateLabel);
+		elements.userList.appendChild(row);
+	});
+}
+
+async function addUserAccount() {
+	setFormError(elements.newUserError);
+	const username = elements.newUserUsername.value.trim();
+	const temporaryPassword = elements.newUserPassword.value;
+	if (!username || !temporaryPassword) {
+		setFormError(elements.newUserError, 'Username and temporary password are required.');
+		return;
+	}
+	elements.addUserAccount.disabled = true;
+	try {
+		await fetchJson('/api/users', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ username, temporary_password: temporaryPassword }),
+		});
+		elements.newUserUsername.value = '';
+		elements.newUserPassword.value = '';
+		await loadUsers();
+		setStatus(`${username} can now sign in with their temporary password.`);
+	} catch (error) {
+		setFormError(elements.newUserError, error.message);
+	} finally {
+		elements.addUserAccount.disabled = false;
+	}
+}
+
+async function openAccount() {
+	setFormError(elements.accountError);
+	elements.accountCurrentPassword.value = '';
+	elements.accountNewPassword.value = '';
+	elements.accountConfirmPassword.value = '';
+	try {
+		const account = await fetchJson('/api/account');
+		elements.accountUsername.value = account.username || '';
+		elements.accountModal.showModal();
+		elements.accountUsername.focus();
+	} catch (error) {
+		setStatus(`Could not load account: ${error.message}`, 'error');
+	}
+}
+
+async function saveAccount() {
+	setFormError(elements.accountError);
+	const username = elements.accountUsername.value.trim();
+	const currentPassword = elements.accountCurrentPassword.value;
+	const newPassword = elements.accountNewPassword.value;
+	const confirmation = elements.accountConfirmPassword.value;
+	if (newPassword !== confirmation) {
+		setFormError(elements.accountError, 'New passwords do not match.');
+		return;
+	}
+	elements.saveAccount.disabled = true;
+	try {
+		await fetchJson('/api/account', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({
+				username, current_password: currentPassword, new_password: newPassword, confirm_password: confirmation,
+			}),
+		});
+		elements.accountModal.close();
+		setStatus('Account updated.');
+	} catch (error) {
+		setFormError(elements.accountError, error.message);
+	} finally {
+		elements.saveAccount.disabled = false;
+	}
 }
 
 function applySettings(settings) {
@@ -341,16 +427,29 @@ function renderSubscriptions() {
         feedList.innerHTML = '<p class="nav-empty">No feeds in this group.</p>';
       }
       for (const feed of feeds) {
-        feedList.appendChild(createNavButton(
+		const feedButton = createNavButton(
           'feed-item', feed.title || feed.url, feed.id === state.selectedFeedId,
           () => selectFeed(feed.id), feed.unread_count || 0,
-        ));
+		);
+		if (feed.last_refresh_error) {
+			feedButton.classList.add('has-error');
+			const warning = document.createElement('span');
+			warning.className = 'feed-warning';
+			warning.textContent = '⚠';
+			warning.setAttribute('aria-label', 'Update failed');
+			warning.title = feed.last_refresh_error;
+			feedButton.insertBefore(warning, feedButton.lastChild);
+		}
+		feedList.appendChild(feedButton);
       }
       groupElement.appendChild(feedList);
     }
     elements.subscriptionList.appendChild(groupElement);
   }
 	if (sidebar) sidebar.scrollTop = scrollTop;
+	const problemCount = state.feeds.filter(feed => feed.last_refresh_error).length;
+	elements.problemFeedsButton.hidden = problemCount === 0;
+	elements.problemFeedsButton.textContent = problemCount === 1 ? '1 problem feed' : `${problemCount} problem feeds`;
 	updateBrowserUnreadBadge();
 }
 
@@ -360,8 +459,11 @@ function totalUnreadCount() {
 
 function formatFaviconUnreadCount(count) {
 	if (count < 1000) return String(count);
-	if (count < 1_000_000) return `${Math.floor(count / 1000)}k`;
-	return `${Math.floor(count / 1_000_000)}m`;
+	const divisor = count < 1_000_000 ? 1000 : 1_000_000;
+	const suffix = count < 1_000_000 ? 'k' : 'm';
+	const scaled = count / divisor;
+	const compact = scaled < 10 ? Number(scaled.toFixed(1)) : Math.floor(scaled);
+	return `${compact}${suffix}`;
 }
 
 function roundedRectPath(context, x, y, width, height, radius) {
@@ -853,37 +955,153 @@ async function saveFeed() {
   }
 }
 
-function openFeedSettings() {
-	const feed = state.feeds.find(item => item.id === state.selectedFeedId);
+function openFeedSettings(feedOverride = null) {
+	const feed = feedOverride || state.feeds.find(item => item.id === state.selectedFeedId);
 	if (!feed) return;
+	state.editingFeedId = feed.id;
 	setFormError(elements.feedSettingsError);
 	elements.feedSettingsName.textContent = feed.title || feed.url;
+	elements.feedSettingsURL.value = feed.url || '';
 	elements.feedSettingsDisplay.value = feed.display_mode || 'headline';
 	elements.feedSettingsSort.value = feed.sort_direction || 'desc';
 	elements.feedSettingsModal.showModal();
 }
 
 async function saveFeedSettings() {
-	const feed = state.feeds.find(item => item.id === state.selectedFeedId);
+	const feed = state.feeds.find(item => item.id === state.editingFeedId);
 	if (!feed) return;
 	setFormError(elements.feedSettingsError);
 	elements.saveFeedSettings.disabled = true;
 	const displayMode = elements.feedSettingsDisplay.value;
 	const sortDirection = elements.feedSettingsSort.value;
+	const feedURL = elements.feedSettingsURL.value.trim();
 	try {
 		await fetchJson('/api/feeds/update', {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({ feed_id: feed.id, display_mode: displayMode, sort_direction: sortDirection }),
+			body: new URLSearchParams({ feed_id: feed.id, url: feedURL, display_mode: displayMode, sort_direction: sortDirection }),
 		});
+		feed.url = feedURL;
 		feed.display_mode = displayMode;
 		feed.sort_direction = sortDirection;
 		elements.feedSettingsModal.close();
-		await loadArticles(feed.id, { hideRead: state.hideReadArticles });
+		if (feed.id === state.selectedFeedId) await loadArticles(feed.id, { hideRead: state.hideReadArticles });
 		setStatus('Feed settings saved.');
 	} catch (error) {
 		setFormError(elements.feedSettingsError, error.message);
 	} finally {
 		elements.saveFeedSettings.disabled = false;
+	}
+}
+
+function failedFeeds() {
+	return state.feeds.filter(feed => feed.last_refresh_error);
+}
+
+function formatRefreshTime(rawTime) {
+	const date = rawTime ? new Date(rawTime) : null;
+	return date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : 'Unknown time';
+}
+
+function renderProblemFeeds() {
+	const feeds = failedFeeds();
+	elements.problemFeedsList.replaceChildren();
+	if (!feeds.length) {
+		elements.problemFeedsList.innerHTML = '<p class="nav-empty">No feeds currently have update problems.</p>';
+		return;
+	}
+	feeds.forEach(feed => {
+		const item = document.createElement('article');
+		item.className = 'problem-feed';
+		const title = document.createElement('h3');
+		title.textContent = feed.title || 'Untitled feed';
+		const feedURL = document.createElement('p');
+		feedURL.className = 'problem-feed-url';
+		feedURL.textContent = feed.url;
+		const error = document.createElement('p');
+		error.className = 'problem-feed-error';
+		error.textContent = feed.last_refresh_error;
+		const attempted = document.createElement('p');
+		attempted.className = 'problem-feed-time';
+		attempted.textContent = `Last attempted ${formatRefreshTime(feed.last_refresh_at)}`;
+		const actions = document.createElement('div');
+		actions.className = 'problem-feed-actions';
+		const retry = document.createElement('button');
+		retry.type = 'button';
+		retry.className = 'button-secondary';
+		retry.textContent = 'Retry';
+		retry.addEventListener('click', () => retryFeed(feed, retry));
+		const edit = document.createElement('button');
+		edit.type = 'button';
+		edit.className = 'button-secondary';
+		edit.textContent = 'Edit';
+		edit.addEventListener('click', () => {
+			elements.problemFeedsModal.close();
+			openFeedSettings(feed);
+		});
+		const remove = document.createElement('button');
+		remove.type = 'button';
+		remove.className = 'button-danger';
+		remove.textContent = 'Remove';
+		remove.addEventListener('click', () => requestDeleteFeed(feed));
+		actions.append(retry, edit, remove);
+		item.append(title, feedURL, error, attempted, actions);
+		elements.problemFeedsList.appendChild(item);
+	});
+}
+
+function openProblemFeeds() {
+	renderProblemFeeds();
+	elements.problemFeedsModal.showModal();
+}
+
+async function retryFeed(feed, button) {
+	button.disabled = true;
+	button.textContent = 'Retrying...';
+	try {
+		const result = await fetchJson('/api/refresh', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ feed_id: feed.id }),
+		});
+		await loadGroups();
+		await loadFeeds();
+		renderProblemFeeds();
+		if (result.failed) setStatus(`${feed.title || 'Feed'} still could not be updated.`, 'error');
+		else setStatus(`${feed.title || 'Feed'} updated successfully.`);
+	} catch (error) {
+		setStatus(`Could not retry feed: ${error.message}`, 'error');
+		button.disabled = false;
+		button.textContent = 'Retry';
+	}
+}
+
+function requestDeleteFeed(feed) {
+	state.feedPendingDeletion = feed.id;
+	elements.problemFeedsModal.close();
+	elements.deleteFeedSummary.textContent = `Remove ${feed.title || feed.url}?`;
+	setFormError(elements.deleteFeedError);
+	elements.deleteFeedModal.showModal();
+}
+
+async function deletePendingFeed() {
+	const feed = state.feeds.find(item => item.id === state.feedPendingDeletion);
+	if (!feed) return;
+	elements.confirmDeleteFeed.disabled = true;
+	setFormError(elements.deleteFeedError);
+	try {
+		await fetchJson('/api/feeds/delete', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ feed_id: feed.id }),
+		});
+		if (state.selectedFeedId === feed.id) state.selectedFeedId = null;
+		state.feedPendingDeletion = null;
+		elements.deleteFeedModal.close();
+		await loadGroups();
+		await loadFeeds();
+		setStatus(`${feed.title || 'Feed'} removed.`);
+	} catch (error) {
+		setFormError(elements.deleteFeedError, error.message);
+	} finally {
+		elements.confirmDeleteFeed.disabled = false;
 	}
 }
 
@@ -1061,7 +1279,8 @@ function cacheElements() {
     feedDisplay: document.getElementById('feed-display-mode'), feedSort: document.getElementById('feed-sort-direction'),
     feedFormError: document.getElementById('feed-form-error'), saveFeed: document.getElementById('save-feed-btn'),
 	feedSettingsModal: document.getElementById('feed-settings-modal'), feedSettingsForm: document.getElementById('feed-settings-form'),
-	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsDisplay: document.getElementById('feed-settings-display-mode'),
+	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsURL: document.getElementById('feed-settings-url'),
+	feedSettingsDisplay: document.getElementById('feed-settings-display-mode'),
 	feedSettingsSort: document.getElementById('feed-settings-sort-direction'), feedSettingsError: document.getElementById('feed-settings-error'),
 	saveFeedSettings: document.getElementById('save-feed-settings-btn'),
     settingsModal: document.getElementById('settings-modal'), settingsForm: document.getElementById('settings-form'),
@@ -1074,6 +1293,17 @@ function cacheElements() {
 	shortcutsModal: document.getElementById('shortcuts-modal'),
 	releaseModal: document.getElementById('release-modal'), releaseSummary: document.getElementById('release-modal-summary'),
 	releaseLink: document.getElementById('release-modal-link'),
+	problemFeedsButton: document.getElementById('problem-feeds-btn'), problemFeedsModal: document.getElementById('problem-feeds-modal'),
+	problemFeedsList: document.getElementById('problem-feeds-list'), deleteFeedModal: document.getElementById('delete-feed-modal'),
+	deleteFeedSummary: document.getElementById('delete-feed-summary'), deleteFeedError: document.getElementById('delete-feed-error'),
+	confirmDeleteFeed: document.getElementById('confirm-delete-feed-btn'),
+	userList: document.getElementById('user-list'), newUserUsername: document.getElementById('new-user-username'),
+	newUserPassword: document.getElementById('new-user-password'), newUserError: document.getElementById('new-user-error'),
+	addUserAccount: document.getElementById('add-user-account-btn'),
+	accountModal: document.getElementById('account-modal'), accountForm: document.getElementById('account-form'),
+	accountUsername: document.getElementById('account-username'), accountCurrentPassword: document.getElementById('account-current-password'),
+	accountNewPassword: document.getElementById('account-new-password'), accountConfirmPassword: document.getElementById('account-confirm-password'),
+	accountError: document.getElementById('account-error'), saveAccount: document.getElementById('save-account-btn'),
   });
 }
 
@@ -1085,21 +1315,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     elements.feedModal.showModal();
     elements.feedURL.focus();
   });
+	document.getElementById('account-btn').addEventListener('click', openAccount);
+	document.getElementById('cancel-account-btn').addEventListener('click', () => elements.accountModal.close());
+	elements.accountForm.addEventListener('submit', event => { event.preventDefault(); saveAccount(); });
   document.getElementById('cancel-feed-btn').addEventListener('click', () => elements.feedModal.close());
   elements.feedForm.addEventListener('submit', event => { event.preventDefault(); saveFeed(); });
-	elements.feedSettingsButton.addEventListener('click', openFeedSettings);
+	elements.feedSettingsButton.addEventListener('click', () => openFeedSettings());
 	document.getElementById('cancel-feed-settings-btn').addEventListener('click', () => elements.feedSettingsModal.close());
 	elements.feedSettingsForm.addEventListener('submit', event => { event.preventDefault(); saveFeedSettings(); });
-  document.getElementById('settings-btn').addEventListener('click', async () => {
+	elements.problemFeedsButton.addEventListener('click', openProblemFeeds);
+	document.getElementById('close-problem-feeds-btn').addEventListener('click', () => elements.problemFeedsModal.close());
+	document.getElementById('cancel-delete-feed-btn').addEventListener('click', () => {
+		elements.deleteFeedModal.close();
+		state.feedPendingDeletion = null;
+		if (failedFeeds().length) openProblemFeeds();
+	});
+	elements.confirmDeleteFeed.addEventListener('click', deletePendingFeed);
+	const settingsButton = document.getElementById('settings-btn');
+	settingsButton?.addEventListener('click', async () => {
     setFormError(elements.settingsFormError);
 	elements.settingsRefreshResult.hidden = true;
     try {
       await loadSettings();
+	  await loadUsers();
       elements.settingsModal.showModal();
     } catch (error) {
       setStatus(`Could not load settings: ${error.message}`, 'error');
     }
   });
+	elements.addUserAccount?.addEventListener('click', addUserAccount);
   document.getElementById('cancel-settings-btn').addEventListener('click', () => elements.settingsModal.close());
   elements.settingsForm.addEventListener('submit', event => { event.preventDefault(); saveSettings(); });
 	elements.refreshNow.addEventListener('click', refreshNow);

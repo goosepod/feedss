@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-19
+
+### Added
+
+- First-run administrator creation with no default credentials, plus administrator-managed users with temporary passwords and mandatory password replacement.
+- Self-service username and password changes protected by current-password verification.
+- Persistent problem-feed reporting with retry, URL editing, and feed removal actions.
+- A startup banner with version, runtime configuration, project, license, and readiness information.
+
+### Changed
+
+- Store new passwords with bcrypt and transparently upgrade legacy plaintext passwords after a successful login.
+- Use compact decimal favicon counts such as `2.3k` for large unread totals.
+
+### Fixed
+
+- Visually center the white RSS artwork within the application icon.
+
 ## [0.5.1] - 2026-08-19
 
 ### Fixed
@@ -83,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/goosepod/feedss/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/goosepod/feedss/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/goosepod/feedss/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/goosepod/feedss/compare/v0.3.0...v0.4.0
