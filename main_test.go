@@ -844,6 +844,147 @@ func TestDefaultSettingsUse500ArticleRetention(t *testing.T) {
 	}
 }
 
+func TestSavedArticlesAreOwnedAndExemptFromCleanup(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	owner, err := app.createUser("owner", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.createUser("other", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupResult, err := app.db.Exec("INSERT INTO groups(name, created_by) VALUES('Inbox', ?)", owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, _ := groupResult.LastInsertId()
+	feedResult, err := app.db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES('Example', 'https://example.com/feed', ?, ?)", groupID, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := feedResult.LastInsertId()
+	oldDate := time.Now().UTC().Add(-45 * 24 * time.Hour).Format(time.RFC3339)
+	savedResult, err := app.db.Exec("INSERT INTO articles(feed_id, title, published_at, guid) VALUES(?, 'Keep me', ?, 'saved')", feedID, oldDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedID, _ := savedResult.LastInsertId()
+	if _, err := app.db.Exec("INSERT INTO articles(feed_id, title, published_at, guid) VALUES(?, 'Remove me', ?, 'unsaved')", feedID, oldDate); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"article_id": {strconv.FormatInt(savedID, 10)}, "saved": {"true"}}
+	request := httptest.NewRequest(http.MethodPost, "/api/articles/saved", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response := httptest.NewRecorder()
+	app.handleArticleSavedAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("save failed: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/articles/saved", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, other)
+	response = httptest.NewRecorder()
+	app.handleArticleSavedAPI(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("another user updated saved state: %d %s", response.Code, response.Body.String())
+	}
+
+	if err := maintainStoredArticles(app.db); err != nil {
+		t.Fatal(err)
+	}
+	articles, total, err := app.listSavedArticlesPage(owner.ID, 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(articles) != 1 || articles[0].ID != savedID || !articles[0].IsSaved {
+		t.Fatalf("unexpected saved articles after cleanup: total=%d articles=%#v", total, articles)
+	}
+	var unsavedCount int
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM articles WHERE guid = 'unsaved'").Scan(&unsavedCount); err != nil {
+		t.Fatal(err)
+	}
+	if unsavedCount != 0 {
+		t.Fatal("old unsaved article was not cleaned up")
+	}
+}
+
+func TestArticleSearchUsesFTSAndRespectsScopes(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	owner, err := app.createUser("owner", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.createUser("other", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createFeed := func(userID int64, groupName, feedTitle string) (int64, int64) {
+		t.Helper()
+		groupResult, err := app.db.Exec("INSERT INTO groups(name, created_by) VALUES(?, ?)", groupName, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		groupID, _ := groupResult.LastInsertId()
+		feedResult, err := app.db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES(?, ?, ?, ?)", feedTitle, "https://example.com/"+feedTitle, groupID, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		feedID, _ := feedResult.LastInsertId()
+		return groupID, feedID
+	}
+	groupID, feedID := createFeed(owner.ID, "Engineering", "Architecture")
+	_, secondFeedID := createFeed(owner.ID, "Operations", "Runbooks")
+	_, otherFeedID := createFeed(other.ID, "Private", "Other")
+	articleResult, err := app.db.Exec("INSERT INTO articles(feed_id, title, description, content, guid, order_index) VALUES(?, 'SQLite queue architecture', 'Durable workers', 'Uses database transactions', 'one', 30)", feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	articleID, _ := articleResult.LastInsertId()
+	if _, err := app.db.Exec("INSERT INTO articles(feed_id, title, description, guid, order_index) VALUES(?, 'Backup workflow', 'Consistent snapshots', 'two', 20)", secondFeedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.db.Exec("INSERT INTO articles(feed_id, title, description, guid, order_index) VALUES(?, 'SQLite queue architecture', 'Other user secret', 'three', 40)", otherFeedID); err != nil {
+		t.Fatal(err)
+	}
+
+	articles, total, err := app.searchArticles(owner.ID, "sqlite archit", "", "", 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(articles) != 1 || articles[0].ID != articleID {
+		t.Fatalf("unexpected global search: total=%d articles=%#v", total, articles)
+	}
+	articles, total, err = app.searchArticles(owner.ID, "backup", "", strconv.FormatInt(groupID, 10), 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || len(articles) != 0 {
+		t.Fatalf("group scope leaked results: total=%d articles=%#v", total, articles)
+	}
+	if _, err := app.db.Exec("UPDATE articles SET title = 'Embedded search engine' WHERE id = ?", articleID); err != nil {
+		t.Fatal(err)
+	}
+	articles, total, err = app.searchArticles(owner.ID, "embedded search", strconv.FormatInt(feedID, 10), "", 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(articles) != 1 || articles[0].ID != articleID {
+		t.Fatalf("FTS update trigger did not synchronize: total=%d articles=%#v", total, articles)
+	}
+}
+
 func TestFirstLoginCreatesAdministratorWithoutDefaultAccount(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
 	if err != nil {
@@ -876,6 +1017,41 @@ func TestFirstLoginCreatesAdministratorWithoutDefaultAccount(t *testing.T) {
 	}
 	if inboxCount != 1 {
 		t.Fatalf("expected administrator Inbox group, got %d", inboxCount)
+	}
+}
+
+func TestInvalidLoginRendersFormWithInlineError(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	if _, err := app.createUser("reader", "correct-password", false); err != nil {
+		t.Fatal(err)
+	}
+
+	const attemptedPassword = "definitely-not-the-password"
+	form := url.Values{"username": {"reader"}, "password": {attemptedPassword}}
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	app.handleLogin(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized response, got %d: %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`<form class="login-card" method="post" action="/login"`,
+		`value="reader"`,
+		`role="alert">The username or password is incorrect.</p>`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("login response is missing %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, attemptedPassword) {
+		t.Fatal("login response included the attempted password")
 	}
 }
 

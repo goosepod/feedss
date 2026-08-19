@@ -1,6 +1,6 @@
 # feedss
 
-feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, feed health reporting, multiple local users, manual refresh, release notifications, installable PWA support, and a local SQLite database.
+feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, saved articles, SQLite full-text search, per-feed display modes, keyboard navigation, feed health reporting, multiple local users, manual refresh, release notifications, installable PWA support, and a local SQLite database.
 
 See the [changelog](CHANGELOG.md) for release history. Contributions are covered by the [contributing guide](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md), and [security policy](SECURITY.md). feedss is licensed under the [GNU General Public License v3.0](LICENSE).
 
@@ -99,6 +99,7 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 - `v`: open the selected article
 - `c`: open comments when available
 - `r`: refresh the current feed or group from the top and hide read articles
+- `s`: save or unsave the selected article
 - `Shift+A`: mark the current feed or group as read
 - `?`: show shortcuts
 

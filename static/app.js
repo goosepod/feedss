@@ -18,8 +18,11 @@ const state = {
 	articlesLoading: false,
 	subscriptionMetadataLoading: false,
   selectedGroupId: null,
-  selectedFeedId: null,
+	selectedFeedId: null,
   viewMode: 'group',
+	searchQuery: '',
+	searchFeedId: null,
+	searchGroupId: null,
 	defaultDisplayMode: 'headline',
 	defaultSortOrder: 'desc',
 	releaseCheckEnabled: true,
@@ -42,6 +45,44 @@ if ('serviceWorker' in navigator) {
 
 const elements = {};
 let subscriptionPollTimer = null;
+
+function mobileMenuIsAvailable() {
+	return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function closeMobileMenus() {
+	document.body.classList.remove('mobile-nav-open', 'mobile-actions-open', 'search-open');
+	elements.mobileNavToggle?.setAttribute('aria-expanded', 'false');
+	elements.mobileActionsToggle?.setAttribute('aria-expanded', 'false');
+	elements.searchViewButton?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMobileMenu(menu) {
+	if (!mobileMenuIsAvailable()) return;
+	const className = menu === 'nav' ? 'mobile-nav-open' : 'mobile-actions-open';
+	const willOpen = !document.body.classList.contains(className);
+	closeMobileMenus();
+	if (!willOpen) return;
+	document.body.classList.add(className);
+	const toggle = menu === 'nav' ? elements.mobileNavToggle : elements.mobileActionsToggle;
+	toggle?.setAttribute('aria-expanded', 'true');
+	requestAnimationFrame(() => {
+		if (menu === 'nav') {
+			document.getElementById('mobile-nav-close')?.focus();
+		} else {
+			elements.appActions?.querySelector('button:not([hidden]), a:not([hidden])')?.focus();
+		}
+	});
+}
+
+function toggleSearch() {
+	const willOpen = !document.body.classList.contains('search-open');
+	closeMobileMenus();
+	if (!willOpen) return;
+	document.body.classList.add('search-open');
+	elements.searchViewButton.setAttribute('aria-expanded', 'true');
+	requestAnimationFrame(() => elements.articleSearch.focus());
+}
 
 function setStatus(message = '', type = 'info') {
   elements.statusMessage.textContent = message;
@@ -371,6 +412,100 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
   }
 }
 
+async function loadSavedArticles() {
+	const requestID = ++state.articleRequest;
+	elements.readerLabel.textContent = 'Library';
+	elements.feedHeader.textContent = 'Saved articles';
+	state.articleTotal = 0;
+	state.articleOffset = 0;
+	state.hasMoreArticles = false;
+	state.hideReadArticles = false;
+	elements.articlePane.innerHTML = '<div class="empty-state">Loading saved articles...</div>';
+	updateArticleControls();
+	try {
+		const data = await fetchJson(`/api/articles?saved=1&limit=${ARTICLE_PAGE_SIZE}`);
+		if (requestID !== state.articleRequest) return;
+		state.articles = Array.isArray(data?.articles) ? data.articles : [];
+		state.articleOffset = state.articles.length;
+		state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+		state.hasMoreArticles = typeof data?.has_more === 'boolean' ? data.has_more : state.articles.length < state.articleTotal;
+		state.selectedArticleIndex = -1;
+		state.expandedArticleIds = new Set();
+		elements.articlePane.scrollTop = 0;
+		renderArticles();
+	} catch (error) {
+		if (requestID !== state.articleRequest) return;
+		state.articles = [];
+		state.articleTotal = 0;
+		state.hasMoreArticles = false;
+		renderArticles();
+		setStatus(`Could not load saved articles: ${error.message}`, 'error');
+	}
+}
+
+function searchScopeParameters() {
+	if (state.searchFeedId !== null) return `&feed_id=${encodeURIComponent(state.searchFeedId)}`;
+	if (state.searchGroupId !== null) return `&group_id=${encodeURIComponent(state.searchGroupId)}`;
+	return '';
+}
+
+async function loadSearchResults() {
+	const requestID = ++state.articleRequest;
+	elements.readerLabel.textContent = state.searchFeedId !== null
+		? 'Search in feed' : (state.searchGroupId !== null ? 'Search in group' : 'Search all articles');
+	elements.feedHeader.textContent = `Results for “${state.searchQuery}”`;
+	state.articleTotal = 0;
+	state.articleOffset = 0;
+	state.hasMoreArticles = false;
+	state.hideReadArticles = false;
+	elements.articlePane.innerHTML = '<div class="empty-state">Searching articles...</div>';
+	updateArticleControls();
+	try {
+		const data = await fetchJson(`/api/search?q=${encodeURIComponent(state.searchQuery)}&limit=${ARTICLE_PAGE_SIZE}${searchScopeParameters()}`);
+		if (requestID !== state.articleRequest) return;
+		state.articles = Array.isArray(data?.articles) ? data.articles : [];
+		state.articleOffset = state.articles.length;
+		state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+		state.hasMoreArticles = typeof data?.has_more === 'boolean' ? data.has_more : state.articles.length < state.articleTotal;
+		state.selectedArticleIndex = -1;
+		state.expandedArticleIds = new Set();
+		elements.articlePane.scrollTop = 0;
+		renderArticles();
+	} catch (error) {
+		if (requestID !== state.articleRequest) return;
+		state.articles = [];
+		state.articleTotal = 0;
+		state.hasMoreArticles = false;
+		renderArticles();
+		setStatus(`Could not search articles: ${error.message}`, 'error');
+	}
+}
+
+function selectSavedArticles() {
+	state.selectedGroupId = null;
+	state.selectedFeedId = null;
+	state.viewMode = 'saved';
+	state.articles = [];
+	renderSubscriptions();
+	void loadSavedArticles();
+}
+
+function submitSearch() {
+	const query = elements.articleSearch.value.trim();
+	if (!query) return;
+	const currentScope = elements.searchScope.querySelector('input:checked')?.value === 'current';
+	state.searchFeedId = currentScope && state.viewMode === 'feed' ? state.selectedFeedId : null;
+	state.searchGroupId = currentScope && state.viewMode === 'group' ? state.selectedGroupId : null;
+	state.searchQuery = query;
+	state.selectedGroupId = null;
+	state.selectedFeedId = null;
+	state.viewMode = 'search';
+	state.articles = [];
+	closeMobileMenus();
+	renderSubscriptions();
+	void loadSearchResults();
+}
+
 function getVisibleFeeds() {
   return state.selectedGroupId === null
     ? state.feeds
@@ -402,6 +537,12 @@ function createNavButton(className, label, active, onClick, count) {
 function renderSubscriptions() {
 	const sidebar = elements.subscriptionList.closest('.sidebar');
 	const scrollTop = sidebar?.scrollTop || 0;
+	elements.savedViewButton.classList.toggle('active', state.viewMode === 'saved');
+	if (state.viewMode === 'saved') elements.savedViewButton.setAttribute('aria-current', 'page');
+	else elements.savedViewButton.removeAttribute('aria-current');
+	elements.searchViewButton.classList.toggle('active', state.viewMode === 'search');
+	if (state.viewMode === 'search') elements.searchViewButton.setAttribute('aria-current', 'page');
+	else elements.searchViewButton.removeAttribute('aria-current');
   elements.subscriptionList.replaceChildren();
   if (!state.groups.length) {
     elements.subscriptionList.innerHTML = '<p class="nav-empty">No subscriptions yet.</p>';
@@ -684,19 +825,49 @@ function createArticleContent(article) {
 	return content;
 }
 
+async function toggleArticleSaved(article) {
+	const wasSaved = Boolean(article.is_saved);
+	article.is_saved = !wasSaved;
+	if (state.viewMode === 'saved' && wasSaved) {
+		state.articles = state.articles.filter(item => item.id !== article.id);
+		state.articleTotal = Math.max(0, state.articleTotal - 1);
+		state.selectedArticleIndex = -1;
+	}
+	renderArticles();
+	try {
+		await fetchJson('/api/articles/saved', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ article_id: article.id, saved: article.is_saved }),
+		});
+	} catch (error) {
+		article.is_saved = wasSaved;
+		if (state.viewMode === 'saved' && wasSaved && !state.articles.some(item => item.id === article.id)) {
+			state.articles.push(article);
+			state.articleTotal += 1;
+		}
+		renderArticles();
+		setStatus(`Could not update saved article: ${error.message}`, 'error');
+	}
+}
+
 function renderArticles() {
   const feed = state.feeds.find(item => item.id === state.selectedFeedId);
 	const group = state.groups.find(item => item.id === state.selectedGroupId);
 	const source = state.viewMode === 'group' ? group : feed;
-	elements.feedHeader.textContent = source?.name || source?.title || 'Select a subscription';
+	if (state.viewMode === 'saved') elements.feedHeader.textContent = 'Saved articles';
+	else if (state.viewMode === 'search') elements.feedHeader.textContent = `Results for “${state.searchQuery}”`;
+	else elements.feedHeader.textContent = source?.name || source?.title || 'Select a subscription';
   elements.articlePane.replaceChildren();
-	if (!source) {
+	if (!source && !['saved', 'search'].includes(state.viewMode)) {
 		elements.articlePane.innerHTML = '<div class="empty-state">Add or choose a subscription to start reading.</div>';
     updateArticleControls();
     return;
   }
   if (!state.articles.length) {
-		elements.articlePane.innerHTML = '<div class="empty-state">No articles are available here yet.</div>';
+		const message = state.viewMode === 'saved'
+			? 'No saved articles yet. Use the star on an article to keep it here.'
+			: (state.viewMode === 'search' ? 'No articles matched this search.' : 'No articles are available here yet.');
+		elements.articlePane.innerHTML = `<div class="empty-state">${message}</div>`;
     updateArticleControls();
     return;
   }
@@ -719,6 +890,19 @@ function renderArticles() {
 			title.target = '_blank';
 			title.rel = 'noopener noreferrer';
 		}
+		const headingRow = document.createElement('div');
+		headingRow.className = 'article-heading-row';
+		const saveButton = document.createElement('button');
+		saveButton.type = 'button';
+		saveButton.className = `save-article${article.is_saved ? ' saved' : ''}`;
+		saveButton.textContent = article.is_saved ? '★' : '☆';
+		saveButton.setAttribute('aria-label', `${article.is_saved ? 'Remove from saved' : 'Save'}: ${article.title || 'Untitled article'}`);
+		saveButton.title = article.is_saved ? 'Remove from saved' : 'Save article';
+		saveButton.addEventListener('click', event => {
+			event.stopPropagation();
+			void toggleArticleSaved(article);
+		});
+		headingRow.append(title, saveButton);
     const meta = document.createElement('span');
     meta.className = 'article-meta';
     const date = article.published_at ? new Date(article.published_at) : null;
@@ -732,7 +916,7 @@ function renderArticles() {
 			if (siteIcon) meta.appendChild(siteIcon);
 		}
 		meta.appendChild(metaText);
-    header.append(title, meta);
+		header.append(headingRow, meta);
     articleElement.appendChild(header);
 
     if (expanded) {
@@ -753,9 +937,9 @@ function updateArticleControls() {
 	const source = state.viewMode === 'group'
 		? state.groups.find(item => item.id === state.selectedGroupId)
 		: state.feeds.find(item => item.id === state.selectedFeedId);
-	const unread = source?.unread_count ?? state.articles.filter(article => !article.is_read).length;
+	const unread = source?.unread_count ?? 0;
 	elements.articleCount.textContent = `${total} article${total === 1 ? '' : 's'}`;
-	elements.markAllRead.disabled = unread === 0;
+	elements.markAllRead.disabled = !source || unread === 0;
 	elements.feedSettingsButton.hidden = state.viewMode !== 'feed' || state.selectedFeedId === null;
 }
 
@@ -795,16 +979,24 @@ async function loadMoreArticles() {
 	if (state.articlesLoading || !state.hasMoreArticles || !state.articles.length) return false;
 	state.articlesLoading = true;
 	const requestID = state.articleRequest;
-	const parameter = state.viewMode === 'group' ? 'group_id' : 'feed_id';
-	const id = state.viewMode === 'group' ? state.selectedGroupId : state.selectedFeedId;
-	const lastArticle = state.articles[state.articles.length - 1];
-	const cursor = Number.isFinite(Number(lastArticle.order_index))
-		? `&cursor_order_index=${encodeURIComponent(lastArticle.order_index)}&cursor_id=${encodeURIComponent(lastArticle.id)}`
-		: `&offset=${state.articleOffset}`;
-	const unreadOnly = state.hideReadArticles ? '&unread_only=1' : '';
+	let url;
+	if (state.viewMode === 'saved') {
+		url = `/api/articles?saved=1&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}`;
+	} else if (state.viewMode === 'search') {
+		url = `/api/search?q=${encodeURIComponent(state.searchQuery)}&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}${searchScopeParameters()}`;
+	} else {
+		const parameter = state.viewMode === 'group' ? 'group_id' : 'feed_id';
+		const id = state.viewMode === 'group' ? state.selectedGroupId : state.selectedFeedId;
+		const lastArticle = state.articles[state.articles.length - 1];
+		const cursor = Number.isFinite(Number(lastArticle.order_index))
+			? `&cursor_order_index=${encodeURIComponent(lastArticle.order_index)}&cursor_id=${encodeURIComponent(lastArticle.id)}`
+			: `&offset=${state.articleOffset}`;
+		const unreadOnly = state.hideReadArticles ? '&unread_only=1' : '';
+		url = `/api/articles?${parameter}=${encodeURIComponent(id)}&limit=${ARTICLE_PAGE_SIZE}${cursor}${unreadOnly}`;
+	}
 	const scrollTop = elements.articlePane.scrollTop;
 	try {
-		const data = await fetchJson(`/api/articles?${parameter}=${encodeURIComponent(id)}&limit=${ARTICLE_PAGE_SIZE}${cursor}${unreadOnly}`);
+		const data = await fetchJson(url);
 		if (requestID !== state.articleRequest) return false;
 		const received = Array.isArray(data?.articles) ? data.articles : [];
 		state.articleOffset += received.length;
@@ -839,8 +1031,12 @@ async function refreshCurrentView() {
 	elements.articlePane.scrollTop = 0;
 	if (state.viewMode === 'group' && state.selectedGroupId !== null) {
 		await loadGroupArticles(state.selectedGroupId, { hideRead: true });
-	} else if (state.selectedFeedId !== null) {
+	} else if (state.viewMode === 'feed' && state.selectedFeedId !== null) {
 		await loadArticles(state.selectedFeedId, { hideRead: true });
+	} else if (state.viewMode === 'saved') {
+		await loadSavedArticles();
+	} else if (state.viewMode === 'search') {
+		await loadSearchResults();
 	}
 }
 
@@ -1242,8 +1438,18 @@ function openSelectedArticleField(field) {
 	if (url) window.open(url, '_blank', 'noopener');
 }
 
+function toggleSelectedArticleSaved() {
+	const article = state.articles[state.selectedArticleIndex] || state.articles[0];
+	if (article) void toggleArticleSaved(article);
+}
+
 function bindKeyboard() {
   document.addEventListener('keydown', event => {
+		if (event.key === 'Escape' && (document.body.classList.contains('mobile-nav-open') || document.body.classList.contains('mobile-actions-open') || document.body.classList.contains('search-open'))) {
+			event.preventDefault();
+			closeMobileMenus();
+			return;
+		}
     if (document.querySelector('dialog[open]')) return;
     if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
     const key = event.key.toLowerCase();
@@ -1263,6 +1469,10 @@ function bindKeyboard() {
     if (key === 'p') return moveFeed(-1);
 		if (key === 'v') return openSelectedArticleField('link');
 		if (key === 'c') return openSelectedArticleField('comments_link');
+		if (key === 's') {
+			event.preventDefault();
+			return toggleSelectedArticleSaved();
+		}
 		if (key === 'r') {
 			event.preventDefault();
 			return refreshCurrentView();
@@ -1273,9 +1483,14 @@ function bindKeyboard() {
 function cacheElements() {
   Object.assign(elements, {
 	status: document.getElementById('status'), subscriptionList: document.getElementById('subscription-list'),
+	mobileNavToggle: document.getElementById('mobile-nav-toggle'), mobileActionsToggle: document.getElementById('mobile-actions-toggle'),
+	mobileMenuBackdrop: document.getElementById('mobile-menu-backdrop'), appActions: document.getElementById('app-actions'),
 	statusMessage: document.getElementById('status-message'),
 	favicon: document.getElementById('favicon'),
 	readerLabel: document.getElementById('reader-label'), feedHeader: document.getElementById('feed-header'),
+	savedViewButton: document.getElementById('saved-view-btn'), searchForm: document.getElementById('search-form'),
+	searchViewButton: document.getElementById('search-view-btn'),
+	articleSearch: document.getElementById('article-search'), searchScope: document.getElementById('search-scope'),
 	articlePane: document.getElementById('article-pane'), articleCount: document.getElementById('article-count'),
 	markAllRead: document.getElementById('mark-all-read-btn'),
 	markAllReadModal: document.getElementById('mark-all-read-modal'),
@@ -1317,6 +1532,28 @@ function cacheElements() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   cacheElements();
+	elements.mobileNavToggle.addEventListener('click', () => toggleMobileMenu('nav'));
+	elements.mobileActionsToggle.addEventListener('click', () => toggleMobileMenu('actions'));
+	document.getElementById('mobile-nav-close').addEventListener('click', closeMobileMenus);
+	elements.mobileMenuBackdrop.addEventListener('click', closeMobileMenus);
+	elements.appActions.addEventListener('click', event => {
+		if (event.target.closest('button, a')) closeMobileMenus();
+	});
+	elements.subscriptionList.addEventListener('click', event => {
+		if (event.target.closest('.group-item, .feed-item')) closeMobileMenus();
+	});
+	elements.savedViewButton.addEventListener('click', () => {
+		closeMobileMenus();
+		selectSavedArticles();
+	});
+	elements.searchViewButton.addEventListener('click', toggleSearch);
+	elements.searchForm.addEventListener('submit', event => {
+		event.preventDefault();
+		submitSearch();
+	});
+	window.addEventListener('resize', () => {
+		if (!mobileMenuIsAvailable()) closeMobileMenus();
+	});
   document.getElementById('dismiss-status-btn').addEventListener('click', () => setStatus());
   document.getElementById('add-feed-btn').addEventListener('click', () => {
     setFormError(elements.feedFormError);

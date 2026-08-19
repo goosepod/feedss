@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20260819-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20260819-9">
 </head>
 <body class="login-page">
   <main class="login-shell">
@@ -26,13 +26,15 @@
 
       <div class="login-field">
         <label for="login-username">Username</label>
-        <input id="login-username" name="username" type="text" autocomplete="username" autofocus required>
+        <input id="login-username" name="username" type="text" autocomplete="username" value="{{.Username}}" {{if not .Username}}autofocus{{end}} required>
       </div>
 
       <div class="login-field">
         <label for="login-password">Password</label>
-		<input id="login-password" name="password" type="password" autocomplete="{{if .Setup}}new-password{{else}}current-password{{end}}" maxlength="72" required>
+		<input id="login-password" name="password" type="password" autocomplete="{{if .Setup}}new-password{{else}}current-password{{end}}" maxlength="72" {{if .Error}}autofocus{{end}} required>
       </div>
+
+		{{if .Error}}<p class="form-error login-error" role="alert">{{.Error}}</p>{{end}}
 
 		<button class="login-submit" type="submit">{{if .Setup}}Create administrator{{else}}Sign in{{end}}</button>
     </form>

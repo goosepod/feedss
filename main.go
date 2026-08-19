@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mmcdole/gofeed"
 	"golang.org/x/crypto/bcrypt"
@@ -108,6 +109,7 @@ type Article struct {
 	MediaURL     string    `json:"media_url"`
 	OrderIndex   int       `json:"order_index"`
 	IsRead       bool      `json:"is_read"`
+	IsSaved      bool      `json:"is_saved"`
 }
 
 // ArticlePage bounds reader responses while retaining the total result count.
@@ -174,6 +176,12 @@ type ReleaseCheckResult struct {
 	ReleasesURL     string         `json:"releases_url"`
 }
 
+type LoginPage struct {
+	Setup    bool
+	Username string
+	Error    string
+}
+
 func main() {
 	// Keep the banner and structured startup notices on the same stream. Docker
 	// does not preserve ordering when it merges stdout and stderr.
@@ -225,6 +233,8 @@ func main() {
 	mux.HandleFunc("/api/feeds/delete", app.handleDeleteFeedAPI)
 	mux.HandleFunc("/api/articles", app.handleArticlesAPI)
 	mux.HandleFunc("/api/articles/read", app.handleArticleReadAPI)
+	mux.HandleFunc("/api/articles/saved", app.handleArticleSavedAPI)
+	mux.HandleFunc("/api/search", app.handleSearchAPI)
 	mux.HandleFunc("/api/image", app.handleImageProxy)
 	mux.HandleFunc("/api/favicon", app.handleFaviconProxy)
 	mux.HandleFunc("/api/refresh", app.handleRefreshAPI)
@@ -371,6 +381,7 @@ func initSchema(db *sql.DB) error {
 			media_url TEXT,
 			order_index INTEGER NOT NULL DEFAULT 0,
 			is_read INTEGER NOT NULL DEFAULT 0,
+			is_saved INTEGER NOT NULL DEFAULT 0,
 			FOREIGN KEY(feed_id) REFERENCES feeds(id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS app_settings (
@@ -572,9 +583,7 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		if err := app.tmpl.ExecuteTemplate(w, "login.html", struct{ Setup bool }{Setup: setup}); err != nil {
-			log.Printf("template error: %v", err)
-		}
+		app.renderLogin(w, http.StatusOK, LoginPage{Setup: setup})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -589,11 +598,11 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 	if username == "" || password == "" {
-		http.Error(w, "username and password are required", http.StatusBadRequest)
+		app.renderLogin(w, http.StatusBadRequest, LoginPage{Setup: setup, Username: username, Error: "Username and password are required."})
 		return
 	}
 	if setup && len([]byte(password)) > 72 {
-		http.Error(w, "password must be 72 bytes or fewer", http.StatusBadRequest)
+		app.renderLogin(w, http.StatusBadRequest, LoginPage{Setup: setup, Username: username, Error: "Password must be 72 bytes or fewer."})
 		return
 	}
 
@@ -605,7 +614,7 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			app.renderLogin(w, http.StatusUnauthorized, LoginPage{Setup: setup, Username: username, Error: "The username or password is incorrect."})
 			return
 		}
 		http.Error(w, "login failed", http.StatusInternalServerError)
@@ -621,6 +630,15 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (app *App) renderLogin(w http.ResponseWriter, status int, page LoginPage) {
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
+	if err := app.tmpl.ExecuteTemplate(w, "login.html", page); err != nil {
+		log.Printf("template error: %v", err)
+	}
 }
 
 func (app *App) needsInitialAdmin() (bool, error) {
@@ -1131,7 +1149,7 @@ func extractCommentsLinkFromHTML(rawHTML string) string {
 
 func maintainStoredArticles(db *sql.DB) error {
 	cutoff := time.Now().UTC().Add(-articleFreshnessWindow).Format(time.RFC3339)
-	if _, err := db.Exec("DELETE FROM articles WHERE published_at IS NOT NULL AND published_at < ?", cutoff); err != nil {
+	if _, err := db.Exec("DELETE FROM articles WHERE is_saved = 0 AND published_at IS NOT NULL AND published_at < ?", cutoff); err != nil {
 		return err
 	}
 	titleRows, err := db.Query("SELECT id, title FROM articles")
@@ -1292,7 +1310,7 @@ func (app *App) refreshFeedContent(userID int64, feedID int64) error {
 		}
 	}
 	cutoff := time.Now().UTC().Add(-articleFreshnessWindow)
-	if _, err := app.db.Exec("DELETE FROM articles WHERE feed_id = ? AND published_at IS NOT NULL AND published_at < ?", feedID, cutoff.Format(time.RFC3339)); err != nil {
+	if _, err := app.db.Exec("DELETE FROM articles WHERE feed_id = ? AND is_saved = 0 AND published_at IS NOT NULL AND published_at < ?", feedID, cutoff.Format(time.RFC3339)); err != nil {
 		return err
 	}
 	newest := time.Time{}
@@ -1395,13 +1413,13 @@ func (app *App) refreshFeedContent(userID int64, feedID int64) error {
 		settings = &AppSettings{MaxArticlesPerFeed: 500}
 	}
 	var total int
-	if err := app.db.QueryRow("SELECT COUNT(*) FROM articles WHERE feed_id = ?", feedID).Scan(&total); err != nil {
+	if err := app.db.QueryRow("SELECT COUNT(*) FROM articles WHERE feed_id = ? AND is_saved = 0", feedID).Scan(&total); err != nil {
 		return err
 	}
 	if total > settings.MaxArticlesPerFeed {
 		deleteCount := total - settings.MaxArticlesPerFeed
 		_, err = app.db.Exec(
-			"DELETE FROM articles WHERE id IN (SELECT id FROM articles WHERE feed_id = ? ORDER BY order_index ASC, published_at ASC, id ASC LIMIT ?)",
+			"DELETE FROM articles WHERE id IN (SELECT id FROM articles WHERE feed_id = ? AND is_saved = 0 ORDER BY order_index ASC, published_at ASC, id ASC LIMIT ?)",
 			feedID,
 			deleteCount,
 		)
@@ -1557,6 +1575,7 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	feedID := r.URL.Query().Get("feed_id")
 	groupID := r.URL.Query().Get("group_id")
+	savedOnly := r.URL.Query().Get("saved") == "1" || strings.EqualFold(r.URL.Query().Get("saved"), "true")
 	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 30)
 	if limit < 1 {
 		limit = 1
@@ -1568,15 +1587,19 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	if feedID == "" && groupID == "" {
+	if feedID == "" && groupID == "" && !savedOnly {
 		jsonSuccess(w, ArticlePage{Articles: []Article{}, Total: 0})
 		return
 	}
-	readThrough, err := app.latestArticleCursor(user.ID, feedID, groupID)
-	if err != nil {
-		log.Printf("find article read-through boundary: %v", err)
-		http.Error(w, "failed to load articles", http.StatusInternalServerError)
-		return
+	var readThrough *articleCursor
+	var err error
+	if !savedOnly {
+		readThrough, err = app.latestArticleCursor(user.ID, feedID, groupID)
+		if err != nil {
+			log.Printf("find article read-through boundary: %v", err)
+			http.Error(w, "failed to load articles", http.StatusInternalServerError)
+			return
+		}
 	}
 	var articles []Article
 	var total int
@@ -1588,7 +1611,10 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		cursor = &articleCursor{OrderIndex: cursorOrder, ID: cursorID}
 	}
 	unreadOnly := r.URL.Query().Get("unread_only") == "1" || strings.EqualFold(r.URL.Query().Get("unread_only"), "true")
-	if groupID != "" {
+	if savedOnly {
+		articles, total, err = app.listSavedArticlesPage(user.ID, limit, offset)
+		hasMore = offset+len(articles) < total
+	} else if groupID != "" {
 		sortDirection := "desc"
 		if settings, settingsErr := app.getSettings(); settingsErr == nil {
 			sortDirection = settings.DefaultSortOrder
@@ -1720,6 +1746,92 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, _ := result.RowsAffected()
 	jsonSuccess(w, map[string]any{"status": "ok", "updated": updated})
+}
+
+func (app *App) handleArticleSavedAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	articleID := strings.TrimSpace(r.FormValue("article_id"))
+	if articleID == "" {
+		http.Error(w, "article_id is required", http.StatusBadRequest)
+		return
+	}
+	saved, err := strconv.ParseBool(strings.TrimSpace(r.FormValue("saved")))
+	if err != nil {
+		http.Error(w, "saved must be true or false", http.StatusBadRequest)
+		return
+	}
+	result, err := app.db.Exec(
+		"UPDATE articles SET is_saved = ? WHERE id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)",
+		boolToInt(saved), articleID, user.ID,
+	)
+	if err != nil {
+		log.Printf("update saved article: %v", err)
+		http.Error(w, "failed to update saved article", http.StatusInternalServerError)
+		return
+	}
+	updated, _ := result.RowsAffected()
+	if updated == 0 {
+		http.Error(w, "article not found", http.StatusNotFound)
+		return
+	}
+	jsonSuccess(w, map[string]any{"status": "ok", "saved": saved})
+}
+
+func (app *App) handleSearchAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		http.Error(w, "search query is required", http.StatusBadRequest)
+		return
+	}
+	if len(query) > 500 {
+		http.Error(w, "search query is too long", http.StatusBadRequest)
+		return
+	}
+	feedID := strings.TrimSpace(r.URL.Query().Get("feed_id"))
+	groupID := strings.TrimSpace(r.URL.Query().Get("group_id"))
+	if feedID != "" && groupID != "" {
+		http.Error(w, "choose either feed or group scope", http.StatusBadRequest)
+		return
+	}
+	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 30)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := parseIntOrDefault(r.URL.Query().Get("offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+	articles, total, err := app.searchArticles(user.ID, query, feedID, groupID, limit, offset)
+	if err != nil {
+		log.Printf("search articles: %v", err)
+		http.Error(w, "failed to search articles", http.StatusInternalServerError)
+		return
+	}
+	jsonSuccess(w, ArticlePage{Articles: articles, Total: total, HasMore: offset+len(articles) < total})
 }
 
 const maxProxiedImageBytes = 12 << 20
@@ -2118,7 +2230,7 @@ func (app *App) listArticlesForFeedPage(userID int64, feedID, sortDirection stri
 		return nil, 0, err
 	}
 	rows, err := app.db.Query(
-		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.feed_id = ? AND f.created_by = ? ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ? OFFSET ?",
+		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.feed_id = ? AND f.created_by = ? ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ? OFFSET ?",
 		feedID, userID, limit, offset,
 	)
 	if err != nil {
@@ -2130,7 +2242,7 @@ func (app *App) listArticlesForFeedPage(userID int64, feedID, sortDirection stri
 	for rows.Next() {
 		var a Article
 		var publishedAt sql.NullString
-		if err := rows.Scan(&a.ID, &a.FeedID, &a.FeedTitle, &a.Title, &a.Link, &a.CommentsLink, &a.Description, &a.Content, &publishedAt, &a.GUID, &a.MediaURL, &a.OrderIndex, &a.IsRead); err != nil {
+		if err := rows.Scan(&a.ID, &a.FeedID, &a.FeedTitle, &a.Title, &a.Link, &a.CommentsLink, &a.Description, &a.Content, &publishedAt, &a.GUID, &a.MediaURL, &a.OrderIndex, &a.IsRead, &a.IsSaved); err != nil {
 			return nil, 0, err
 		}
 		if publishedAt.Valid {
@@ -2164,7 +2276,7 @@ func (app *App) listArticlesForFeedCursorPage(userID int64, feedID, sortDirectio
 	}
 	args = append(args, limit+1)
 	rows, err := app.db.Query(
-		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where+" ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ?",
+		"SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''), COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''), COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where+" ORDER BY a.order_index "+direction+", a.id "+direction+" LIMIT ?",
 		args...,
 	)
 	if err != nil {
@@ -2175,7 +2287,7 @@ func (app *App) listArticlesForFeedCursorPage(userID int64, feedID, sortDirectio
 	for rows.Next() {
 		var article Article
 		var publishedAt sql.NullString
-		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead); err != nil {
+		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead, &article.IsSaved); err != nil {
 			return nil, 0, false, err
 		}
 		if publishedAt.Valid {
@@ -2214,7 +2326,7 @@ func (app *App) listArticlesForGroupPage(userID int64, groupID, sortDirection st
 	rows, err := app.db.Query(
 		`SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''),
 			COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''),
-			COALESCE(a.media_url, ''), a.order_index, a.is_read
+			COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved
 		FROM articles a
 		JOIN feeds f ON f.id = a.feed_id
 		WHERE f.group_id = ? AND f.created_by = ?
@@ -2234,7 +2346,7 @@ func (app *App) listArticlesForGroupPage(userID int64, groupID, sortDirection st
 		if err := rows.Scan(
 			&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link,
 			&article.CommentsLink, &article.Description, &article.Content, &publishedAt,
-			&article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead,
+			&article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead, &article.IsSaved,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -2271,7 +2383,7 @@ func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirect
 	rows, err := app.db.Query(
 		`SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''),
 			COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''),
-			COALESCE(a.media_url, ''), a.order_index, a.is_read
+			COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved
 		FROM articles a
 		JOIN feeds f ON f.id = a.feed_id
 		WHERE `+where+`
@@ -2287,7 +2399,7 @@ func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirect
 	for rows.Next() {
 		var article Article
 		var publishedAt sql.NullString
-		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead); err != nil {
+		if err := rows.Scan(&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link, &article.CommentsLink, &article.Description, &article.Content, &publishedAt, &article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead, &article.IsSaved); err != nil {
 			return nil, 0, false, err
 		}
 		if publishedAt.Valid {
@@ -2304,6 +2416,120 @@ func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirect
 		articles = articles[:limit]
 	}
 	return articles, total, hasMore, nil
+}
+
+func (app *App) listSavedArticlesPage(userID int64, limit, offset int) ([]Article, int, error) {
+	const where = "a.is_saved = 1 AND f.created_by = ?"
+	var total int
+	if err := app.db.QueryRow(
+		"SELECT COUNT(*) FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where,
+		userID,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := app.db.Query(
+		`SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''),
+			COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''),
+			COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved
+		FROM articles a
+		JOIN feeds f ON f.id = a.feed_id
+		WHERE `+where+`
+		ORDER BY a.order_index DESC, a.id DESC
+		LIMIT ? OFFSET ?`,
+		userID, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	articles, err := scanArticles(rows)
+	return articles, total, err
+}
+
+func ftsSearchQuery(raw string) string {
+	tokens := make([]string, 0, 8)
+	var token strings.Builder
+	flush := func() {
+		if token.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, `"`+token.String()+`"*`)
+		token.Reset()
+	}
+	for _, r := range raw {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			token.WriteRune(unicode.ToLower(r))
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return strings.Join(tokens, " AND ")
+}
+
+func (app *App) searchArticles(userID int64, rawQuery, feedID, groupID string, limit, offset int) ([]Article, int, error) {
+	match := ftsSearchQuery(rawQuery)
+	if match == "" {
+		return []Article{}, 0, nil
+	}
+	where := "article_search MATCH ? AND f.created_by = ?"
+	args := []any{match, userID}
+	if feedID != "" {
+		where += " AND a.feed_id = ?"
+		args = append(args, feedID)
+	} else if groupID != "" {
+		where += " AND f.group_id = ?"
+		args = append(args, groupID)
+	}
+	var total int
+	if err := app.db.QueryRow(
+		`SELECT COUNT(*) FROM article_search
+		JOIN articles a ON a.id = article_search.rowid
+		JOIN feeds f ON f.id = a.feed_id
+		WHERE `+where,
+		args...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := app.db.Query(
+		`SELECT a.id, a.feed_id, f.title, a.title, COALESCE(a.link, ''), COALESCE(a.comments_link, ''),
+			COALESCE(a.description, ''), COALESCE(a.content, ''), a.published_at, COALESCE(a.guid, ''),
+			COALESCE(a.media_url, ''), a.order_index, a.is_read, a.is_saved
+		FROM article_search
+		JOIN articles a ON a.id = article_search.rowid
+		JOIN feeds f ON f.id = a.feed_id
+		WHERE `+where+`
+		ORDER BY bm25(article_search, 8.0, 2.0, 1.0), a.order_index DESC, a.id DESC
+		LIMIT ? OFFSET ?`,
+		queryArgs...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	articles, err := scanArticles(rows)
+	return articles, total, err
+}
+
+func scanArticles(rows *sql.Rows) ([]Article, error) {
+	defer rows.Close()
+	articles := make([]Article, 0)
+	for rows.Next() {
+		var article Article
+		var publishedAt sql.NullString
+		if err := rows.Scan(
+			&article.ID, &article.FeedID, &article.FeedTitle, &article.Title, &article.Link,
+			&article.CommentsLink, &article.Description, &article.Content, &publishedAt,
+			&article.GUID, &article.MediaURL, &article.OrderIndex, &article.IsRead, &article.IsSaved,
+		); err != nil {
+			return nil, err
+		}
+		if publishedAt.Valid {
+			article.PublishedAt, _ = time.Parse(time.RFC3339, publishedAt.String)
+		}
+		article.Title = normalizeArticleTitle(article.Title)
+		articles = append(articles, article)
+	}
+	return articles, rows.Err()
 }
 
 func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {

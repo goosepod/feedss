@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-19
+
+### Added
+
+- Saved articles with per-article star controls, a dedicated Saved view, the `S` shortcut, and cleanup protection for saved rows.
+- SQLite FTS5 search across article titles, summaries, and content, with relevance ranking and optional current-feed or current-group scope.
+- A roadmap item for keeping read and saved state synchronized across open clients.
+
+### Changed
+
+- Reworked mobile navigation into an off-canvas subscription drawer and compact action menu so article content remains the focus.
+- Moved search into an on-demand Library overlay on desktop and mobile instead of permanently occupying reader space.
+
+### Fixed
+
+- Keep failed sign-ins on the login form with a clear inline error while preserving the entered username.
+
 ## [0.7.0] - 2026-08-19
 
 ### Added
@@ -117,7 +134,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/goosepod/feedss/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/goosepod/feedss/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/goosepod/feedss/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/goosepod/feedss/compare/v0.5.1...v0.6.0

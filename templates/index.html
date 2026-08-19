@@ -8,16 +8,23 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20260819-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20260819-9">
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
+      <button id="mobile-nav-toggle" class="mobile-header-button mobile-nav-toggle" type="button" aria-label="Open subscriptions" aria-controls="subscription-sidebar" aria-expanded="false">
+        <span class="hamburger-icon" aria-hidden="true"></span>
+      </button>
       <a class="brand" href="/">
         <img class="brand-icon" src="/static/favicon.svg" alt="">
         <span>feedss</span>
       </a>
-      <nav class="app-actions" aria-label="Account and feed actions">
+	  <button id="mobile-actions-toggle" class="mobile-header-button mobile-actions-toggle" type="button" aria-label="Open actions" aria-controls="app-actions" aria-expanded="false">
+		<span aria-hidden="true">&#8942;</span>
+	  </button>
+	  <button id="mobile-menu-backdrop" class="mobile-menu-backdrop" type="button" aria-label="Close menu" tabindex="-1"></button>
+      <nav id="app-actions" class="app-actions" aria-label="Account and feed actions">
 		<button id="problem-feeds-btn" class="button-warning" type="button" hidden>Problem feeds</button>
         <button id="import-btn" class="button-secondary" type="button">Import</button>
         <button id="export-btn" class="button-secondary" type="button">Export</button>
@@ -34,7 +41,22 @@
     </div>
 
     <div class="app-content">
-      <aside class="sidebar" aria-label="Feed navigation">
+      <aside id="subscription-sidebar" class="sidebar" aria-label="Feed navigation">
+		<div class="sidebar-mobile-header">
+		  <strong>Subscriptions</strong>
+		  <button id="mobile-nav-close" class="mobile-panel-close" type="button" aria-label="Close subscriptions">&times;</button>
+		</div>
+		<section class="nav-section">
+		  <h2>Library</h2>
+		  <button id="saved-view-btn" class="library-item" type="button">
+			<span aria-hidden="true">★</span>
+			<span>Saved articles</span>
+		  </button>
+		  <button id="search-view-btn" class="library-item" type="button" aria-controls="search-form" aria-expanded="false">
+			<span aria-hidden="true">⌕</span>
+			<span>Search articles</span>
+		  </button>
+		</section>
         <section class="nav-section">
           <h2>Subscriptions</h2>
           <div id="subscription-list" class="subscription-list"></div>
@@ -42,8 +64,26 @@
       </aside>
 
       <main class="main-panel">
+		<form id="search-form" class="search-form" role="search">
+		  <label class="visually-hidden" for="article-search">Search articles</label>
+		  <input id="article-search" type="search" placeholder="Search articles" maxlength="500" required>
+		  <div id="search-scope" class="search-scope-field" role="group" aria-labelledby="search-scope-label">
+			<span id="search-scope-label">Search in</span>
+			<div class="search-scope-options">
+			  <label class="search-scope-option">
+				<input type="radio" name="search-scope" value="all" checked>
+				<span>All articles</span>
+			  </label>
+			  <label class="search-scope-option">
+				<input type="radio" name="search-scope" value="current">
+				<span>Current view</span>
+			  </label>
+			</div>
+		  </div>
+		  <button type="submit">Search</button>
+		</form>
         <header class="reader-header">
-          <div>
+          <div class="reader-heading">
 			<p id="reader-label" class="reader-label">Current feed</p>
             <h1 id="feed-header">Select a feed</h1>
           </div>
@@ -233,6 +273,7 @@
         <div><dt><kbd>V</kbd></dt><dd>Open original</dd></div>
         <div><dt><kbd>C</kbd></dt><dd>Open comments</dd></div>
 		<div><dt><kbd>R</kbd></dt><dd>Refresh current view and hide read articles</dd></div>
+		<div><dt><kbd>S</kbd></dt><dd>Save or unsave selected article</dd></div>
         <div><dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all read</dd></div>
         <div><dt><kbd>?</kbd></dt><dd>Show shortcuts</dd></div>
       </dl>
@@ -254,6 +295,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260819-1"></script>
+  <script src="/static/app.js?v=20260819-9"></script>
 </body>
 </html>

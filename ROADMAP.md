@@ -52,18 +52,27 @@ does not cache navigations, API responses, account data, or articles.
 
 ## 4. Saved articles
 
-**Status:** planned
+**Status:** complete
 
 - Let readers save and unsave articles.
 - Add a Saved view and keyboard action.
 - Exempt saved articles from age- and count-based cleanup.
 
+Implemented with an indexed `is_saved` article flag, a top-level Saved view,
+per-article star controls, and the `S` keyboard shortcut. Cleanup and per-feed
+retention queries exclude saved rows.
+
 ## 5. Search
 
-**Status:** planned
+**Status:** complete
 
 - Add SQLite full-text search across article titles, summaries, and content.
 - Support global search and optional feed/group scope.
+
+Implemented with an external-content SQLite FTS5 table, weighted BM25 ranking,
+prefix matching, and insert/update/delete triggers that keep the index synchronized.
+The reader can search globally or scope a query to the currently selected feed or
+group.
 
 ## 6. Backups
 
@@ -85,3 +94,15 @@ does not cache navigations, API responses, account data, or articles.
 
 - Add top-level All unread, Saved, and Recently read views.
 - Keep pagination and unread-count behavior consistent with feed and group views.
+
+## 9. Cross-client synchronization
+
+**Status:** planned
+
+- Reflect read state, saved articles, subscription changes, and unread counts across
+  every open browser and installed app for the same account.
+- Store a monotonic change revision or change log in SQLite so synchronization
+  remains durable and works across multiple feedss processes.
+- Let foreground clients apply changes promptly without replacing or repositioning
+  the article list currently being read.
+- Reconcile immediately when a backgrounded phone or PWA returns to the foreground.

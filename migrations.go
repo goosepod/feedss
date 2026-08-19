@@ -66,6 +66,51 @@ var migrations = []migration{
 			return ensureColumn(db, "feeds", "last_modified", "TEXT NOT NULL DEFAULT ''")
 		},
 	},
+	{
+		Version: 6,
+		Name:    "add_saved_articles",
+		Apply: func(db *sql.DB) error {
+			if err := ensureColumn(db, "articles", "is_saved", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+			_, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_articles_saved ON articles(is_saved, order_index DESC, id DESC)")
+			return err
+		},
+	},
+	{
+		Version: 7,
+		Name:    "add_article_full_text_search",
+		Apply: func(db *sql.DB) error {
+			statements := []string{
+				`CREATE VIRTUAL TABLE IF NOT EXISTS article_search USING fts5(
+					title, description, content,
+					content='articles', content_rowid='id',
+					tokenize='unicode61 remove_diacritics 2'
+				)`,
+				`CREATE TRIGGER IF NOT EXISTS articles_search_insert AFTER INSERT ON articles BEGIN
+					INSERT INTO article_search(rowid, title, description, content)
+					VALUES (new.id, new.title, COALESCE(new.description, ''), COALESCE(new.content, ''));
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS articles_search_delete AFTER DELETE ON articles BEGIN
+					INSERT INTO article_search(article_search, rowid, title, description, content)
+					VALUES ('delete', old.id, old.title, COALESCE(old.description, ''), COALESCE(old.content, ''));
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS articles_search_update AFTER UPDATE OF title, description, content ON articles BEGIN
+					INSERT INTO article_search(article_search, rowid, title, description, content)
+					VALUES ('delete', old.id, old.title, COALESCE(old.description, ''), COALESCE(old.content, ''));
+					INSERT INTO article_search(rowid, title, description, content)
+					VALUES (new.id, new.title, COALESCE(new.description, ''), COALESCE(new.content, ''));
+				END`,
+				`INSERT INTO article_search(article_search) VALUES('rebuild')`,
+			}
+			for _, statement := range statements {
+				if _, err := db.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {
