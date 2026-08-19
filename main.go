@@ -100,9 +100,11 @@ type Article struct {
 
 // ArticlePage bounds reader responses while retaining the total result count.
 type ArticlePage struct {
-	Articles []Article `json:"articles"`
-	Total    int       `json:"total"`
-	HasMore  bool      `json:"has_more"`
+	Articles              []Article `json:"articles"`
+	Total                 int       `json:"total"`
+	HasMore               bool      `json:"has_more"`
+	ReadThroughOrderIndex *int64    `json:"read_through_order_index,omitempty"`
+	ReadThroughID         *int64    `json:"read_through_id,omitempty"`
 }
 
 type articleCursor struct {
@@ -1075,10 +1077,15 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		jsonSuccess(w, ArticlePage{Articles: []Article{}, Total: 0})
 		return
 	}
+	readThrough, err := app.latestArticleCursor(user.ID, feedID, groupID)
+	if err != nil {
+		log.Printf("find article read-through boundary: %v", err)
+		http.Error(w, "failed to load articles", http.StatusInternalServerError)
+		return
+	}
 	var articles []Article
 	var total int
 	var hasMore bool
-	var err error
 	var cursor *articleCursor
 	cursorOrder, cursorOrderErr := strconv.ParseInt(r.URL.Query().Get("cursor_order_index"), 10, 64)
 	cursorID, cursorIDErr := strconv.ParseInt(r.URL.Query().Get("cursor_id"), 10, 64)
@@ -1118,7 +1125,35 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to load articles", http.StatusInternalServerError)
 		return
 	}
-	jsonSuccess(w, ArticlePage{Articles: articles, Total: total, HasMore: hasMore})
+	page := ArticlePage{Articles: articles, Total: total, HasMore: hasMore}
+	if readThrough != nil {
+		page.ReadThroughOrderIndex = &readThrough.OrderIndex
+		page.ReadThroughID = &readThrough.ID
+	}
+	jsonSuccess(w, page)
+}
+
+func (app *App) latestArticleCursor(userID int64, feedID, groupID string) (*articleCursor, error) {
+	query := `SELECT MAX(a.order_index), MAX(a.id)
+		FROM articles a
+		JOIN feeds f ON f.id = a.feed_id
+		WHERE a.feed_id = ? AND f.created_by = ?`
+	args := []any{feedID, userID}
+	if groupID != "" {
+		query = `SELECT MAX(a.order_index), MAX(a.id)
+			FROM articles a
+			JOIN feeds f ON f.id = a.feed_id
+			WHERE f.group_id = ? AND f.created_by = ?`
+		args = []any{groupID, userID}
+	}
+	var orderIndex, articleID sql.NullInt64
+	if err := app.db.QueryRow(query, args...).Scan(&orderIndex, &articleID); err != nil {
+		return nil, err
+	}
+	if !orderIndex.Valid || !articleID.Valid {
+		return nil, nil
+	}
+	return &articleCursor{OrderIndex: orderIndex.Int64, ID: articleID.Int64}, nil
 }
 
 func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
@@ -1138,6 +1173,24 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 	articleID := strings.TrimSpace(r.FormValue("article_id"))
 	feedID := strings.TrimSpace(r.FormValue("feed_id"))
 	groupID := strings.TrimSpace(r.FormValue("group_id"))
+	readThroughOrderText := strings.TrimSpace(r.FormValue("read_through_order_index"))
+	readThroughIDText := strings.TrimSpace(r.FormValue("read_through_id"))
+	var readThroughOrder, readThroughID int64
+	if (readThroughOrderText == "") != (readThroughIDText == "") {
+		http.Error(w, "read-through order and article id must be provided together", http.StatusBadRequest)
+		return
+	}
+	if readThroughOrderText != "" {
+		var parseErr error
+		readThroughOrder, parseErr = strconv.ParseInt(readThroughOrderText, 10, 64)
+		if parseErr == nil {
+			readThroughID, parseErr = strconv.ParseInt(readThroughIDText, 10, 64)
+		}
+		if parseErr != nil {
+			http.Error(w, "invalid read-through boundary", http.StatusBadRequest)
+			return
+		}
+	}
 	var result sql.Result
 	var err error
 	if articleID != "" {
@@ -1146,15 +1199,21 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 			articleID, user.ID,
 		)
 	} else if feedID != "" {
-		result, err = app.db.Exec(
-			"UPDATE articles SET is_read = 1 WHERE feed_id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)",
-			feedID, user.ID,
-		)
+		query := "UPDATE articles SET is_read = 1 WHERE feed_id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)"
+		args := []any{feedID, user.ID}
+		if readThroughOrderText != "" {
+			query += " AND (order_index < ? OR (order_index = ? AND id <= ?)) AND id <= ?"
+			args = append(args, readThroughOrder, readThroughOrder, readThroughID, readThroughID)
+		}
+		result, err = app.db.Exec(query, args...)
 	} else if groupID != "" {
-		result, err = app.db.Exec(
-			"UPDATE articles SET is_read = 1 WHERE feed_id IN (SELECT id FROM feeds WHERE group_id = ? AND created_by = ?)",
-			groupID, user.ID,
-		)
+		query := "UPDATE articles SET is_read = 1 WHERE feed_id IN (SELECT id FROM feeds WHERE group_id = ? AND created_by = ?)"
+		args := []any{groupID, user.ID}
+		if readThroughOrderText != "" {
+			query += " AND (order_index < ? OR (order_index = ? AND id <= ?)) AND id <= ?"
+			args = append(args, readThroughOrder, readThroughOrder, readThroughID, readThroughID)
+		}
+		result, err = app.db.Exec(query, args...)
 	} else {
 		http.Error(w, "article_id, feed_id, or group_id is required", http.StatusBadRequest)
 		return

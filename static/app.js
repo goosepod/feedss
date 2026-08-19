@@ -12,6 +12,9 @@ const state = {
 	articleOffset: 0,
 	hasMoreArticles: false,
 	hideReadArticles: false,
+	articleSnapshotUnreadCount: 0,
+	readThroughOrderIndex: null,
+	readThroughID: null,
 	articlesLoading: false,
 	subscriptionMetadataLoading: false,
   selectedGroupId: null,
@@ -160,6 +163,36 @@ function startSubscriptionMetadataPolling() {
 	document.addEventListener('visibilitychange', handleAttentionChange);
 }
 
+function captureArticleSnapshot(data, articles, source, hideRead) {
+	const explicitOrder = Number(data?.read_through_order_index);
+	const explicitID = Number(data?.read_through_id);
+	let boundary = Number.isFinite(explicitOrder) && Number.isFinite(explicitID)
+		? { order_index: explicitOrder, id: explicitID }
+		: null;
+	if (!boundary && articles.length) {
+		boundary = {
+			order_index: Math.max(...articles.map(article => Number(article.order_index))),
+			id: Math.max(...articles.map(article => Number(article.id))),
+		};
+	}
+	state.readThroughOrderIndex = boundary?.order_index ?? null;
+	state.readThroughID = boundary?.id ?? null;
+	state.articleSnapshotUnreadCount = hideRead
+		? state.articleTotal
+		: (Number(source?.unread_count) || articles.filter(article => !article.is_read).length);
+}
+
+function reconcileVisibleUnreadCount(source) {
+	if (!state.hideReadArticles || !source || state.articleTotal <= (Number(source.unread_count) || 0)) return;
+	const increase = state.articleTotal - (Number(source.unread_count) || 0);
+	source.unread_count = state.articleTotal;
+	if (state.viewMode === 'feed') {
+		const group = state.groups.find(item => item.id === source.group_id);
+		if (group) group.unread_count = (Number(group.unread_count) || 0) + increase;
+	}
+	renderSubscriptions();
+}
+
 async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 	const requestID = ++state.articleRequest;
 	const group = state.groups.find(item => item.id === groupID);
@@ -169,6 +202,9 @@ async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 	state.articleOffset = 0;
 	state.hasMoreArticles = false;
 	state.hideReadArticles = hideRead;
+	state.readThroughOrderIndex = null;
+	state.readThroughID = null;
+	state.articleSnapshotUnreadCount = 0;
 	elements.articlePane.innerHTML = '<div class="empty-state">Loading articles...</div>';
 	updateArticleControls();
 	try {
@@ -178,6 +214,7 @@ async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 		state.articles = Array.isArray(data?.articles) ? data.articles : [];
 		state.articleOffset = state.articles.length;
 		state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+		captureArticleSnapshot(data, state.articles, group, hideRead);
 		state.hasMoreArticles = typeof data?.has_more === 'boolean'
 			? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
@@ -185,6 +222,7 @@ async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 			state.defaultDisplayMode === 'headline' ? [] : state.articles.map(article => article.id),
 		);
 		elements.articlePane.scrollTop = 0;
+		reconcileVisibleUnreadCount(group);
 		renderArticles();
 	} catch (error) {
 		if (requestID !== state.articleRequest) return;
@@ -206,6 +244,9 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
 	state.articleOffset = 0;
 	state.hasMoreArticles = false;
 	state.hideReadArticles = hideRead;
+	state.readThroughOrderIndex = null;
+	state.readThroughID = null;
+	state.articleSnapshotUnreadCount = 0;
   elements.articlePane.innerHTML = '<div class="empty-state">Loading articles...</div>';
   updateArticleControls();
   try {
@@ -215,6 +256,7 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
 	state.articles = Array.isArray(data?.articles) ? data.articles : [];
 	state.articleOffset = state.articles.length;
 	state.articleTotal = Number.isFinite(data?.total) ? data.total : state.articles.length;
+	captureArticleSnapshot(data, state.articles, feed, hideRead);
 	state.hasMoreArticles = typeof data?.has_more === 'boolean'
 		? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
@@ -222,6 +264,7 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
 	  feed?.display_mode === 'headline' ? [] : state.articles.map(article => article.id),
 	);
 	elements.articlePane.scrollTop = 0;
+	reconcileVisibleUnreadCount(feed);
     renderArticles();
   } catch (error) {
     if (requestID !== state.articleRequest) return;
@@ -729,7 +772,7 @@ function requestMarkAllRead() {
 		: state.feeds.find(item => item.id === state.selectedFeedId);
 	if (!source || (Number(source.unread_count) || 0) === 0) return;
 	const name = source.name || source.title || 'the current view';
-	elements.markAllReadSummary.textContent = `Mark every unread article in ${name} as read?`;
+	elements.markAllReadSummary.textContent = `Mark unread articles currently in ${name} as read? Newer articles won't be affected.`;
 	elements.markAllReadModal.showModal();
 }
 
@@ -742,24 +785,36 @@ async function markAllRead() {
 	if (mode === 'group' && !group) return;
 	const unread = state.articles.filter(article => !article.is_read);
 	if ((mode === 'group' ? group.unread_count : feed.unread_count) === 0 && !unread.length) return;
+	if (state.readThroughOrderIndex === null || state.readThroughID === null) {
+		await refreshCurrentView();
+		return;
+	}
 	const previousGroupUnread = group?.unread_count || 0;
 	const previousFeedUnread = new Map(state.feeds.map(item => [item.id, item.unread_count || 0]));
 	unread.forEach(article => { article.is_read = true; });
 	if (mode === 'group') {
-		state.feeds.filter(item => item.group_id === group.id).forEach(item => { item.unread_count = 0; });
-		group.unread_count = 0;
+		const loadedUnreadByFeed = new Map();
+		unread.forEach(article => loadedUnreadByFeed.set(article.feed_id, (loadedUnreadByFeed.get(article.feed_id) || 0) + 1));
+		state.feeds.filter(item => item.group_id === group.id).forEach(item => {
+			item.unread_count = Math.max(0, (Number(item.unread_count) || 0) - (loadedUnreadByFeed.get(item.id) || 0));
+		});
+		group.unread_count = Math.max(0, previousGroupUnread - state.articleSnapshotUnreadCount);
 		renderSubscriptions();
 	} else {
 		const groupForFeed = state.groups.find(item => item.id === feed.group_id);
-		if (groupForFeed) groupForFeed.unread_count = Math.max(0, groupForFeed.unread_count - feed.unread_count);
-		feed.unread_count = 0;
+		const markedCount = Math.min(Number(feed.unread_count) || 0, state.articleSnapshotUnreadCount);
+		if (groupForFeed) groupForFeed.unread_count = Math.max(0, groupForFeed.unread_count - markedCount);
+		feed.unread_count = Math.max(0, (Number(feed.unread_count) || 0) - markedCount);
 		renderSubscriptions();
 	}
 	renderArticles();
 	try {
+		const body = new URLSearchParams(mode === 'group' ? { group_id: group.id } : { feed_id: feed.id });
+		body.set('read_through_order_index', state.readThroughOrderIndex);
+		body.set('read_through_id', state.readThroughID);
 		await fetchJson('/api/articles/read', {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams(mode === 'group' ? { group_id: group.id } : { feed_id: feed.id }),
+			body,
 		});
 		if (mode === 'group') await loadGroupArticles(group.id, { hideRead });
 		else await loadArticles(feed.id, { hideRead });

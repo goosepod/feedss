@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-19
+
+### Fixed
+
+- Limit Mark all read to the current article-list snapshot so articles arriving in the background remain unread and appear at the top after the list reloads.
+
 ## [0.5.0] - 2026-08-18
 
 ### Added
@@ -77,7 +83,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/goosepod/feedss/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/goosepod/feedss/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/goosepod/feedss/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/goosepod/feedss/compare/v0.2.0...v0.3.0

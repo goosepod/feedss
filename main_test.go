@@ -173,6 +173,61 @@ func TestUnreadCountsAggregateByFeedAndGroup(t *testing.T) {
 	}
 }
 
+func TestMarkFeedReadStopsAtListBoundary(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID := app.ensureGroup(user.ID, "Programming")
+	result, err := db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES(?, ?, ?, ?)", "Example", "https://example.com/rss", groupID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := result.LastInsertId()
+	articleIDs := make([]int64, 0, 3)
+	for index, orderIndex := range []int{100, 200, 150} {
+		result, err := db.Exec("INSERT INTO articles(feed_id, title, guid, order_index) VALUES(?, ?, ?, ?)", feedID, "Article", index, orderIndex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		articleID, _ := result.LastInsertId()
+		articleIDs = append(articleIDs, articleID)
+	}
+
+	form := url.Values{
+		"feed_id":                  {strconv.FormatInt(feedID, 10)},
+		"read_through_order_index": {"200"},
+		"read_through_id":          {strconv.FormatInt(articleIDs[1], 10)},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/articles/read", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	response := httptest.NewRecorder()
+	app.handleArticleReadAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+
+	for index, articleID := range articleIDs {
+		var isRead bool
+		if err := db.QueryRow("SELECT is_read FROM articles WHERE id = ?", articleID).Scan(&isRead); err != nil {
+			t.Fatal(err)
+		}
+		if want := index < 2; isRead != want {
+			t.Fatalf("article %d read state = %v, want %v", articleID, isRead, want)
+		}
+	}
+}
+
 func TestArticleTitleFallsBackToDescriptionText(t *testing.T) {
 	item := &gofeed.Item{Description: `<p><img src="photo.jpg"> A useful fallback title. </p>`}
 	if got := articleTitle(item); got != "A useful fallback title." {

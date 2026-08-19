@@ -115,10 +115,16 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		const articleID = Number(params.get('article_id'));
 		const feedID = Number(params.get('feed_id'));
 		const groupID = Number(params.get('group_id'));
+		const readThroughOrder = Number(params.get('read_through_order_index'));
+		const readThroughID = Number(params.get('read_through_id'));
+		const hasReadThrough = params.has('read_through_order_index') && params.has('read_through_id');
 		let updated = 0;
 		for (const article of articles) {
 			const feed = feeds.find(item => item.id === article.feed_id);
-			if (article.id === articleID || article.feed_id === feedID || feed?.group_id === groupID) {
+			const inScope = article.id === articleID || article.feed_id === feedID || feed?.group_id === groupID;
+			const atOrBeforeBoundary = !hasReadThrough || article.order_index < readThroughOrder
+				|| (article.order_index === readThroughOrder && article.id <= readThroughID);
+			if (inScope && atOrBeforeBoundary && (!hasReadThrough || article.id <= readThroughID)) {
 				if (!article.is_read) updated += 1;
 				article.is_read = true;
 			}
@@ -304,7 +310,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await page.locator('#mark-all-read-btn').click();
 	const markAllReadDialog = page.getByRole('dialog', { name: 'Mark all articles read?' });
 	await expect(markAllReadDialog).toBeVisible();
-	await expect(markAllReadDialog).toContainText('Mark every unread article in Hacker News as read?');
+	await expect(markAllReadDialog).toContainText("Mark unread articles currently in Hacker News as read? Newer articles won't be affected.");
 	await markAllReadDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(markAllReadDialog).toBeHidden();
 	await expect(page.locator('#mark-all-read-btn')).toBeEnabled();
@@ -313,9 +319,16 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	);
 	await page.keyboard.press('Shift+A');
 	await expect(markAllReadDialog).toBeVisible();
+	articles.push({
+		id: 1000, feed_id: 11, feed_title: 'Hacker News', title: 'Unseen newer arrival', link: 'https://example.com/1000',
+		description: '<p>Arrived after this list was loaded.</p>', published_at: '2026-08-18T12:00:00Z', order_index: 30_000, is_read: false,
+	});
 	await markAllReadDialog.getByRole('button', { name: 'Mark all read', exact: true }).click();
 	await markAllRequest;
-	await expect(page.locator('#mark-all-read-btn')).toBeDisabled();
+	await expect(articleRows.first()).toHaveAttribute('data-article-id', '1000');
+	await expect(articleRows.first()).toHaveClass(/unread/);
+	await expect(page.locator('#article-pane')).toHaveJSProperty('scrollTop', 0);
+	await expect(page.locator('#mark-all-read-btn')).toBeEnabled();
 
 	const boardGamesGroup = subscriptions.locator('.subscription-group').filter({ hasText: 'Board games' });
 	await boardGamesGroup.locator('.group-item').click();
