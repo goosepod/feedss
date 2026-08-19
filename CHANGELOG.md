@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-19
+
+### Added
+
+- Administrator downloads of consistent, standalone SQLite backups created with `VACUUM INTO`.
+- Feed discovery from ordinary website URLs, including a candidate picker when multiple RSS or Atom feeds are advertised.
+- Global All unread and Recently read views alongside Saved articles, with persisted reading timestamps and pagination.
+- `/` and `+` keyboard shortcuts for opening search and adding a feed.
+
 ## [0.8.0] - 2026-08-19
 
 ### Added

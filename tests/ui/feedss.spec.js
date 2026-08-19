@@ -101,6 +101,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		{ id: 201, feed_id: 21, feed_title: 'Board Game Quest', title: 'First short article', link: 'https://example.com/201', description: '<p>First summary.</p>', published_at: '2026-08-16T12:00:00Z', order_index: 201, is_read: false },
 		{ id: 202, feed_id: 21, feed_title: 'Board Game Quest', title: 'Second short article', link: 'https://example.com/202', description: '<p>Second summary.</p><img src="https://images.example.com/second.png" alt="Second article image">', published_at: '2026-08-16T11:00:00Z', order_index: 200, is_read: false },
 	]);
+	let addedFeedURL = '';
 	await page.route('**/api/image?url=**', route => route.fulfill({
 		contentType: 'image/png',
 		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
@@ -113,7 +114,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await page.route('**/api/feeds', route => route.fulfill({ json: feeds }));
 	await page.route(/\/api\/articles\?(?:.*)$/, route => {
 		const params = new URL(route.request().url()).searchParams;
-		const savedOnly = params.get('saved') === '1';
+		const view = params.get('view') || (params.get('saved') === '1' ? 'saved' : '');
 		const feedID = params.get('feed_id');
 		const groupID = params.get('group_id');
 		const limit = Number(params.get('limit') || 30);
@@ -123,8 +124,12 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		const cursorID = Number(params.get('cursor_id'));
 		const unreadOnly = params.get('unread_only') === '1';
 		const groupFeedIDs = new Set(feeds.filter(feed => feed.group_id === Number(groupID)).map(feed => feed.id));
-		const matching = (savedOnly
+		const matching = (view === 'saved'
 			? articles.filter(article => article.is_saved)
+			: view === 'unread'
+			? articles.filter(article => !article.is_read)
+			: view === 'recent'
+			? articles.filter(article => article.is_read)
 			: feedID
 			? articles.filter(article => article.feed_id === Number(feedID))
 			: articles.filter(article => groupFeedIDs.has(article.feed_id)))
@@ -137,6 +142,24 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 			json: { articles: continuation.slice(0, limit), total: matching.length, has_more: continuation.length > limit },
 		});
 	});
+	await page.route('**/api/feeds/discover', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const source = params.get('url');
+		return route.fulfill({ json: { feeds: source?.includes('website.example') ? [
+			{ title: 'News', url: 'https://website.example/news.xml' },
+			{ title: 'Updates', url: 'https://website.example/updates.xml' },
+		] : [{ title: 'Example feed', url: source }] } });
+	});
+	await page.route('**/feed/add', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		addedFeedURL = params.get('url') || '';
+		return route.fulfill({ json: { status: 'ok' } });
+	});
+	await page.route('**/api/backup', route => route.fulfill({
+		contentType: 'application/vnd.sqlite3',
+		headers: { 'Content-Disposition': 'attachment; filename="feedss-backup-test.db"' },
+		body: Buffer.from('SQLite format 3\0test'),
+	}));
 	await page.route(/\/api\/search\?(?:.*)$/, route => {
 		const params = new URL(route.request().url()).searchParams;
 		const terms = (params.get('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -243,8 +266,31 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(shortcutsDialog).toBeVisible();
 	await expect(shortcutsDialog).toContainText('Mark all read');
 	await expect(shortcutsDialog).toContainText('Refresh current view and hide read articles');
+	await expect(shortcutsDialog).toContainText('Show search');
+	await expect(shortcutsDialog).toContainText('Add feed');
 	await shortcutsDialog.getByRole('button', { name: 'Close', exact: true }).click();
 	await expect(shortcutsDialog).toBeHidden();
+	await page.keyboard.press('/');
+	await expect(page.getByRole('searchbox', { name: 'Search articles' })).toBeFocused();
+	await expect(page.locator('body')).toHaveClass(/search-open/);
+	await page.keyboard.type('one/two');
+	await expect(page.getByRole('searchbox', { name: 'Search articles' })).toHaveValue('one/two');
+	await page.keyboard.press('Escape');
+	await page.keyboard.press('/');
+	await expect.poll(() => page.getByRole('searchbox', { name: 'Search articles' }).evaluate(input => ({
+		start: input.selectionStart,
+		end: input.selectionEnd,
+		length: input.value.length,
+	}))).toEqual({ start: 0, end: 7, length: 7 });
+	await page.keyboard.press('Backspace');
+	await expect(page.getByRole('searchbox', { name: 'Search articles' })).toHaveValue('');
+	await page.keyboard.press('Escape');
+	await page.keyboard.press('Shift+=');
+	const shortcutAddDialog = page.getByRole('dialog', { name: 'Add feed' });
+	await expect(shortcutAddDialog).toBeVisible();
+	await expect(shortcutAddDialog.getByLabel('Feed URL')).toBeFocused();
+	await page.keyboard.press('Escape');
+	await expect(shortcutAddDialog).toBeHidden();
 	const subscriptions = page.locator('#subscription-list');
 	await expect(subscriptions).not.toBeEmpty();
 	await openMobileSubscriptions(page);
@@ -253,6 +299,13 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const groupToggle = programmingGroup.locator('.group-toggle');
 	await expect(groupToggle).toHaveAttribute('aria-expanded', 'false');
 	await expect(programmingGroup.locator('.feed-item')).toHaveCount(0);
+	await groupTitle.click();
+	await expect(page.locator('#feed-header')).toHaveText('Programming');
+	await openMobileSubscriptions(page);
+	await page.getByRole('button', { name: 'All unread', exact: true }).click();
+	await expect(page.locator('#feed-header')).toHaveText('All unread');
+	await expect(page.locator('#article-count')).toHaveText('121 articles');
+	await openMobileSubscriptions(page);
 	await groupTitle.click();
 	await expect(page.locator('#feed-header')).toHaveText('Programming');
 	await expect(programmingGroup.locator('.feed-item')).toHaveCount(0);
@@ -358,14 +411,26 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await openMobileSubscriptions(page);
 	await groupTitle.click();
 	await expect(page.locator('#feed-header')).toHaveText('Programming');
+	await openMobileSubscriptions(page);
+	await page.getByRole('button', { name: 'Recently read', exact: true }).click();
+	await expect(page.locator('#feed-header')).toHaveText('Recently read');
+	await expect(page.locator('[data-article-id="10"]')).toHaveCount(1);
+	await openMobileSubscriptions(page);
+	await groupTitle.click();
+	await expect(page.locator('#feed-header')).toHaveText('Programming');
 
 	await openMobileActions(page);
   await page.getByRole('button', { name: 'Add feed', exact: true }).click();
   const addDialog = page.getByRole('dialog', { name: 'Add feed' });
   await expect(addDialog).toBeVisible();
   await expect(addDialog.getByLabel('Feed URL')).toBeFocused();
-  await addDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(addDialog).toBeHidden();
+	await addDialog.getByLabel('Feed URL').fill('https://website.example');
+	await addDialog.getByRole('button', { name: 'Add feed', exact: true }).click();
+	await expect(addDialog.getByRole('radiogroup', { name: 'Discovered feeds' })).toBeVisible();
+	await addDialog.getByRole('radio', { name: /Updates/ }).check();
+	await addDialog.getByRole('button', { name: 'Add selected feed', exact: true }).click();
+	await expect(addDialog).toBeHidden();
+	expect(addedFeedURL).toBe('https://website.example/updates.xml');
 
 	await openMobileActions(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -381,6 +446,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await settingsDialog.getByLabel('Temporary password').fill('temporary-pass');
 	await settingsDialog.getByRole('button', { name: 'Add user', exact: true }).click();
 	await expect(settingsDialog.locator('.user-row').filter({ hasText: 'new-reader' })).toContainText('Temporary password');
+	const backupDownload = page.waitForEvent('download');
+	await settingsDialog.getByRole('button', { name: 'Download backup', exact: true }).click();
+	expect((await backupDownload).suggestedFilename()).toBe('feedss-backup-test.db');
 	await settingsDialog.getByLabel('Release notifications').selectOption('prerelease');
 	await settingsDialog.getByRole('button', { name: 'Refresh now', exact: true }).click();
 	await expect(settingsDialog.getByRole('status')).toHaveText('Updated 2 feeds.');

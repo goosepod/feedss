@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -131,6 +132,11 @@ type feedRefreshTarget struct {
 	UserID int64
 }
 
+type FeedCandidate struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
 // App stores runtime state.
 type App struct {
 	db           *sql.DB
@@ -227,6 +233,7 @@ func main() {
 	mux.HandleFunc("/change-password", app.handleChangePassword)
 	mux.HandleFunc("/api/account", app.handleAccountAPI)
 	mux.HandleFunc("/feed/add", app.handleAddFeed)
+	mux.HandleFunc("/api/feeds/discover", app.handleDiscoverFeedsAPI)
 	mux.HandleFunc("/api/groups", app.handleGroupsAPI)
 	mux.HandleFunc("/api/feeds", app.handleFeedsAPI)
 	mux.HandleFunc("/api/feeds/update", app.handleUpdateFeedAPI)
@@ -243,6 +250,7 @@ func main() {
 	mux.HandleFunc("/api/users", app.handleUsersAPI)
 	mux.HandleFunc("/api/import-opml", app.handleImportOPML)
 	mux.HandleFunc("/api/export-opml", app.handleExportOPML)
+	mux.HandleFunc("/api/backup", app.handleBackupAPI)
 	mux.HandleFunc("/service-worker.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
@@ -382,6 +390,7 @@ func initSchema(db *sql.DB) error {
 			order_index INTEGER NOT NULL DEFAULT 0,
 			is_read INTEGER NOT NULL DEFAULT 0,
 			is_saved INTEGER NOT NULL DEFAULT 0,
+			read_at TEXT,
 			FOREIGN KEY(feed_id) REFERENCES feeds(id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS app_settings (
@@ -969,11 +978,23 @@ func (app *App) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	url := strings.TrimSpace(r.FormValue("url"))
-	if url == "" {
+	feedURL := strings.TrimSpace(r.FormValue("url"))
+	if feedURL == "" {
 		http.Error(w, "feed URL is required", http.StatusBadRequest)
 		return
 	}
+	candidates, err := discoverFeedCandidates(feedURL)
+	if err != nil {
+		http.Error(w, "could not find a feed at that address: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if len(candidates) > 1 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "multiple feeds found", "feeds": candidates})
+		return
+	}
+	feedURL = candidates[0].URL
 	groupID := app.ensureGroup(user.ID, "Inbox")
 	if groupName := strings.TrimSpace(r.FormValue("group")); groupName != "" {
 		groupID = app.ensureGroup(user.ID, groupName)
@@ -982,7 +1003,10 @@ func (app *App) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		settings = &AppSettings{DefaultDisplayMode: "headline", DefaultSortOrder: "desc"}
 	}
-	feedTitle, _ := app.fetchFeedTitle(url)
+	feedTitle := candidates[0].Title
+	if feedTitle == "" {
+		feedTitle, _ = app.fetchFeedTitle(feedURL)
+	}
 	feedDisplay := strings.TrimSpace(r.FormValue("display_mode"))
 	if feedDisplay == "" {
 		feedDisplay = settings.DefaultDisplayMode
@@ -995,7 +1019,7 @@ func (app *App) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 	if _, err := app.db.Exec(
 		"INSERT INTO feeds(title, url, group_id, display_mode, sort_direction, created_by) VALUES(?, ?, ?, ?, ?, ?)",
 		feedTitle,
-		url,
+		feedURL,
 		groupID,
 		feedDisplay,
 		feedOrder,
@@ -1007,6 +1031,32 @@ func (app *App) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonSuccess(w, map[string]string{"status": "ok"})
+}
+
+func (app *App) handleDiscoverFeedsAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if user, ok := app.getSession(r); !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	rawURL := strings.TrimSpace(r.FormValue("url"))
+	if rawURL == "" {
+		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+	candidates, err := discoverFeedCandidates(rawURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	jsonSuccess(w, map[string]any{"feeds": candidates})
 }
 
 func (app *App) ensureGroup(userID int64, groupName string) int64 {
@@ -1071,6 +1121,97 @@ func fetchFeed(rawURL, etag, lastModified string) (*gofeed.Feed, string, string,
 		return nil, "", "", false, err
 	}
 	return parsed, response.Header.Get("ETag"), response.Header.Get("Last-Modified"), false, nil
+}
+
+func discoverFeedCandidates(rawURL string) ([]FeedCandidate, error) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return nil, errors.New("enter a valid http or https URL")
+	}
+	request, err := http.NewRequest(http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/atom+xml,application/rss+xml,application/xml,text/xml,text/html,*/*;q=0.8")
+	request.Header.Set("User-Agent", "feedss/1.0")
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("site returned %s", response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxFeedResponseBytes {
+		return nil, errors.New("response exceeds 16 MiB")
+	}
+	if feed, parseErr := gofeed.NewParser().Parse(bytes.NewReader(data)); parseErr == nil {
+		title := strings.TrimSpace(feed.Title)
+		if title == "" {
+			title = "Untitled feed"
+		}
+		return []FeedCandidate{{Title: title, URL: response.Request.URL.String()}}, nil
+	}
+
+	baseURL := response.Request.URL
+	candidates := make([]FeedCandidate, 0)
+	seen := make(map[string]bool)
+	tokenizer := xhtml.NewTokenizer(bytes.NewReader(data))
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			if errors.Is(tokenizer.Err(), io.EOF) {
+				if len(candidates) == 0 {
+					return nil, errors.New("no RSS or Atom feeds were advertised by this page")
+				}
+				return candidates, nil
+			}
+			return nil, tokenizer.Err()
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			if token.Data != "link" {
+				continue
+			}
+			var href, rel, mediaType, title string
+			for _, attribute := range token.Attr {
+				switch strings.ToLower(attribute.Key) {
+				case "href":
+					href = strings.TrimSpace(attribute.Val)
+				case "rel":
+					rel = strings.ToLower(attribute.Val)
+				case "type":
+					mediaType = strings.ToLower(strings.TrimSpace(strings.Split(attribute.Val, ";")[0]))
+				case "title":
+					title = strings.TrimSpace(attribute.Val)
+				}
+			}
+			if !strings.Contains(" "+strings.Join(strings.Fields(rel), " ")+" ", " alternate ") ||
+				(mediaType != "application/rss+xml" && mediaType != "application/atom+xml") || href == "" {
+				continue
+			}
+			reference, err := url.Parse(href)
+			if err != nil {
+				continue
+			}
+			resolved := baseURL.ResolveReference(reference)
+			if resolved.Scheme != "http" && resolved.Scheme != "https" {
+				continue
+			}
+			candidateURL := resolved.String()
+			if seen[candidateURL] {
+				continue
+			}
+			seen[candidateURL] = true
+			if title == "" {
+				title = resolved.Hostname()
+			}
+			candidates = append(candidates, FeedCandidate{Title: title, URL: candidateURL})
+		}
+	}
 }
 
 func normalizePublishedTime(rawValue string, parsed *time.Time) time.Time {
@@ -1576,6 +1717,14 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 	feedID := r.URL.Query().Get("feed_id")
 	groupID := r.URL.Query().Get("group_id")
 	savedOnly := r.URL.Query().Get("saved") == "1" || strings.EqualFold(r.URL.Query().Get("saved"), "true")
+	view := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view")))
+	if savedOnly && view == "" {
+		view = "saved"
+	}
+	if view != "" && view != "unread" && view != "saved" && view != "recent" {
+		http.Error(w, "unknown article view", http.StatusBadRequest)
+		return
+	}
 	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 30)
 	if limit < 1 {
 		limit = 1
@@ -1587,13 +1736,13 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	if feedID == "" && groupID == "" && !savedOnly {
+	if feedID == "" && groupID == "" && view == "" {
 		jsonSuccess(w, ArticlePage{Articles: []Article{}, Total: 0})
 		return
 	}
 	var readThrough *articleCursor
 	var err error
-	if !savedOnly {
+	if view == "" {
 		readThrough, err = app.latestArticleCursor(user.ID, feedID, groupID)
 		if err != nil {
 			log.Printf("find article read-through boundary: %v", err)
@@ -1611,8 +1760,8 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		cursor = &articleCursor{OrderIndex: cursorOrder, ID: cursorID}
 	}
 	unreadOnly := r.URL.Query().Get("unread_only") == "1" || strings.EqualFold(r.URL.Query().Get("unread_only"), "true")
-	if savedOnly {
-		articles, total, err = app.listSavedArticlesPage(user.ID, limit, offset)
+	if view != "" {
+		articles, total, err = app.listGlobalArticlesPage(user.ID, view, limit, offset)
 		hasMore = offset+len(articles) < total
 	} else if groupID != "" {
 		sortDirection := "desc"
@@ -1714,22 +1863,23 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	var result sql.Result
 	var err error
+	readAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if articleID != "" {
 		result, err = app.db.Exec(
-			"UPDATE articles SET is_read = 1 WHERE id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)",
-			articleID, user.ID,
+			"UPDATE articles SET is_read = 1, read_at = COALESCE(read_at, ?) WHERE id = ? AND is_read = 0 AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)",
+			readAt, articleID, user.ID,
 		)
 	} else if feedID != "" {
-		query := "UPDATE articles SET is_read = 1 WHERE feed_id = ? AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)"
-		args := []any{feedID, user.ID}
+		query := "UPDATE articles SET is_read = 1, read_at = COALESCE(read_at, ?) WHERE feed_id = ? AND is_read = 0 AND feed_id IN (SELECT id FROM feeds WHERE created_by = ?)"
+		args := []any{readAt, feedID, user.ID}
 		if readThroughOrderText != "" {
 			query += " AND (order_index < ? OR (order_index = ? AND id <= ?)) AND id <= ?"
 			args = append(args, readThroughOrder, readThroughOrder, readThroughID, readThroughID)
 		}
 		result, err = app.db.Exec(query, args...)
 	} else if groupID != "" {
-		query := "UPDATE articles SET is_read = 1 WHERE feed_id IN (SELECT id FROM feeds WHERE group_id = ? AND created_by = ?)"
-		args := []any{groupID, user.ID}
+		query := "UPDATE articles SET is_read = 1, read_at = COALESCE(read_at, ?) WHERE is_read = 0 AND feed_id IN (SELECT id FROM feeds WHERE group_id = ? AND created_by = ?)"
+		args := []any{readAt, groupID, user.ID}
 		if readThroughOrderText != "" {
 			query += " AND (order_index < ? OR (order_index = ? AND id <= ?)) AND id <= ?"
 			args = append(args, readThroughOrder, readThroughOrder, readThroughID, readThroughID)
@@ -2419,7 +2569,23 @@ func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirect
 }
 
 func (app *App) listSavedArticlesPage(userID int64, limit, offset int) ([]Article, int, error) {
-	const where = "a.is_saved = 1 AND f.created_by = ?"
+	return app.listGlobalArticlesPage(userID, "saved", limit, offset)
+}
+
+func (app *App) listGlobalArticlesPage(userID int64, view string, limit, offset int) ([]Article, int, error) {
+	filter := "a.is_saved = 1"
+	orderBy := "a.order_index DESC, a.id DESC"
+	switch view {
+	case "unread":
+		filter = "a.is_read = 0"
+	case "recent":
+		filter = "a.read_at IS NOT NULL"
+		orderBy = "a.read_at DESC, a.id DESC"
+	case "saved":
+	default:
+		return nil, 0, errors.New("unknown global article view")
+	}
+	where := filter + " AND f.created_by = ?"
 	var total int
 	if err := app.db.QueryRow(
 		"SELECT COUNT(*) FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE "+where,
@@ -2434,7 +2600,7 @@ func (app *App) listSavedArticlesPage(userID int64, limit, offset int) ([]Articl
 		FROM articles a
 		JOIN feeds f ON f.id = a.feed_id
 		WHERE `+where+`
-		ORDER BY a.order_index DESC, a.id DESC
+		ORDER BY `+orderBy+`
 		LIMIT ? OFFSET ?`,
 		userID, limit, offset,
 	)
@@ -2530,6 +2696,65 @@ func scanArticles(rows *sql.Rows) ([]Article, error) {
 		articles = append(articles, article)
 	}
 	return articles, rows.Err()
+}
+
+func createSQLiteBackup(db *sql.DB, destination string) error {
+	if strings.TrimSpace(destination) == "" {
+		return errors.New("backup destination is required")
+	}
+	if _, err := os.Stat(destination); err == nil {
+		return errors.New("backup destination already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := db.Exec("VACUUM INTO ?", destination); err != nil {
+		return fmt.Errorf("sqlite backup: %w", err)
+	}
+	return nil
+}
+
+func (app *App) handleBackupAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !user.IsAdmin {
+		http.Error(w, "admin required", http.StatusForbidden)
+		return
+	}
+	tempDir, err := os.MkdirTemp("", "feedss-backup-")
+	if err != nil {
+		http.Error(w, "failed to prepare backup", http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tempDir)
+	filename := "feedss-backup-" + time.Now().UTC().Format("20060102-150405") + ".db"
+	backupPath := filepath.Join(tempDir, filename)
+	if err := createSQLiteBackup(app.db, backupPath); err != nil {
+		log.Printf("create backup: %v", err)
+		http.Error(w, "failed to create backup", http.StatusInternalServerError)
+		return
+	}
+	file, err := os.Open(backupPath)
+	if err != nil {
+		http.Error(w, "failed to open backup", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		http.Error(w, "failed to inspect backup", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.sqlite3")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, filename, info.ModTime(), file)
 }
 
 func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {

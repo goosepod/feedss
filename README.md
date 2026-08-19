@@ -14,7 +14,7 @@ The administrator can open **Settings → User accounts** to create additional u
 
 Any signed-in user can open **Account** to change their username or password. Account changes require the current password.
 
-Each user has separate groups, feeds, articles, and unread state.
+Each user has separate groups, feeds, articles, saved state, reading history, and unread state.
 
 Sessions use opaque random browser tokens. Only token hashes and expirations are stored in SQLite, and logging out revokes the active session.
 
@@ -64,7 +64,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v0.7.0
+    image: ghcr.io/goosepod/feedss:v0.9.0
     container_name: feedss
     ports:
       - "4317:4317"
@@ -88,7 +88,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v0.7.0
+  ghcr.io/goosepod/feedss:v0.9.0
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -100,8 +100,39 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 - `c`: open comments when available
 - `r`: refresh the current feed or group from the top and hide read articles
 - `s`: save or unsave the selected article
+- `/`: show search and select the current query
+- `+`: add a feed
 - `Shift+A`: mark the current feed or group as read
 - `?`: show shortcuts
+
+## Adding Feeds
+
+The Add feed form accepts either a direct RSS/Atom URL or an ordinary website URL.
+When a website advertises one feed, feedss uses it automatically. When it advertises
+multiple feeds, choose the one you want before adding the subscription.
+
+The Library section provides paginated views for all unread articles, saved articles,
+and articles read since upgrading to the reading-history schema. Search remains an
+on-demand Library action and can search globally or within the current feed or group.
+
+## Backups and Restore
+
+Administrators can open **Settings → Data → Download backup**. feedss asks SQLite to
+create a transactionally consistent, compact database using `VACUUM INTO`; the
+download is a standalone `.db` file and does not require separate `-wal` or `-shm`
+files.
+
+To restore a backup:
+
+1. Stop feedss completely so no process has the database open.
+2. Make a safety copy of the current database and its `-wal` and `-shm` files.
+3. Replace the file configured by `APP_DB_PATH` with the downloaded backup.
+4. Remove stale `-wal` and `-shm` files belonging to the replaced database.
+5. Start feedss. Startup migrations will safely apply if the backup came from an
+   older release.
+
+Keep backups somewhere protected: they contain accounts, password hashes,
+subscriptions, article content, sessions, and application settings.
 
 ## Problem Feeds
 
@@ -115,4 +146,4 @@ On a supporting browser, use its **Install app** or **Add to Home Screen** actio
 
 ## Releases
 
-Pushing a tag like `v0.7.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.
+Pushing a tag like `v0.9.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

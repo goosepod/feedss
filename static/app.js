@@ -33,6 +33,7 @@ const state = {
 	expandedArticleIds: new Set(),
 	feedPendingDeletion: null,
 	editingFeedId: null,
+	discoveredFeedURL: '',
 };
 
 if ('serviceWorker' in navigator) {
@@ -79,9 +80,28 @@ function toggleSearch() {
 	const willOpen = !document.body.classList.contains('search-open');
 	closeMobileMenus();
 	if (!willOpen) return;
+	showSearch();
+}
+
+function showSearch() {
+	closeMobileMenus();
 	document.body.classList.add('search-open');
 	elements.searchViewButton.setAttribute('aria-expanded', 'true');
-	requestAnimationFrame(() => elements.articleSearch.focus());
+	requestAnimationFrame(() => elements.articleSearch.select());
+}
+
+function openAddFeed() {
+	closeMobileMenus();
+	setFormError(elements.feedFormError);
+	clearDiscoveredFeeds();
+	elements.feedModal.showModal();
+	elements.feedURL.focus();
+}
+
+function closeAddFeed() {
+	elements.feedModal.close();
+	clearDiscoveredFeeds();
+	setFormError(elements.feedFormError);
 }
 
 function setStatus(message = '', type = 'info') {
@@ -412,18 +432,25 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
   }
 }
 
-async function loadSavedArticles() {
+const globalViewLabels = {
+	unread: { label: 'Library', title: 'All unread' },
+	saved: { label: 'Library', title: 'Saved articles' },
+	recent: { label: 'Library', title: 'Recently read' },
+};
+
+async function loadGlobalArticles(view) {
 	const requestID = ++state.articleRequest;
-	elements.readerLabel.textContent = 'Library';
-	elements.feedHeader.textContent = 'Saved articles';
+	const viewLabel = globalViewLabels[view];
+	elements.readerLabel.textContent = viewLabel.label;
+	elements.feedHeader.textContent = viewLabel.title;
 	state.articleTotal = 0;
 	state.articleOffset = 0;
 	state.hasMoreArticles = false;
 	state.hideReadArticles = false;
-	elements.articlePane.innerHTML = '<div class="empty-state">Loading saved articles...</div>';
+	elements.articlePane.innerHTML = `<div class="empty-state">Loading ${viewLabel.title.toLowerCase()}...</div>`;
 	updateArticleControls();
 	try {
-		const data = await fetchJson(`/api/articles?saved=1&limit=${ARTICLE_PAGE_SIZE}`);
+		const data = await fetchJson(`/api/articles?view=${encodeURIComponent(view)}&limit=${ARTICLE_PAGE_SIZE}`);
 		if (requestID !== state.articleRequest) return;
 		state.articles = Array.isArray(data?.articles) ? data.articles : [];
 		state.articleOffset = state.articles.length;
@@ -439,8 +466,12 @@ async function loadSavedArticles() {
 		state.articleTotal = 0;
 		state.hasMoreArticles = false;
 		renderArticles();
-		setStatus(`Could not load saved articles: ${error.message}`, 'error');
+		setStatus(`Could not load ${viewLabel.title.toLowerCase()}: ${error.message}`, 'error');
 	}
+}
+
+async function loadSavedArticles() {
+	return loadGlobalArticles('saved');
 }
 
 function searchScopeParameters() {
@@ -481,13 +512,17 @@ async function loadSearchResults() {
 	}
 }
 
-function selectSavedArticles() {
+function selectGlobalView(view) {
 	state.selectedGroupId = null;
 	state.selectedFeedId = null;
-	state.viewMode = 'saved';
+	state.viewMode = view;
 	state.articles = [];
 	renderSubscriptions();
-	void loadSavedArticles();
+	void loadGlobalArticles(view);
+}
+
+function selectSavedArticles() {
+	selectGlobalView('saved');
 }
 
 function submitSearch() {
@@ -540,6 +575,11 @@ function renderSubscriptions() {
 	elements.savedViewButton.classList.toggle('active', state.viewMode === 'saved');
 	if (state.viewMode === 'saved') elements.savedViewButton.setAttribute('aria-current', 'page');
 	else elements.savedViewButton.removeAttribute('aria-current');
+	for (const [view, button] of [['unread', elements.unreadViewButton], ['recent', elements.recentViewButton]]) {
+		button.classList.toggle('active', state.viewMode === view);
+		if (state.viewMode === view) button.setAttribute('aria-current', 'page');
+		else button.removeAttribute('aria-current');
+	}
 	elements.searchViewButton.classList.toggle('active', state.viewMode === 'search');
 	if (state.viewMode === 'search') elements.searchViewButton.setAttribute('aria-current', 'page');
 	else elements.searchViewButton.removeAttribute('aria-current');
@@ -854,19 +894,23 @@ function renderArticles() {
   const feed = state.feeds.find(item => item.id === state.selectedFeedId);
 	const group = state.groups.find(item => item.id === state.selectedGroupId);
 	const source = state.viewMode === 'group' ? group : feed;
-	if (state.viewMode === 'saved') elements.feedHeader.textContent = 'Saved articles';
+	if (globalViewLabels[state.viewMode]) elements.feedHeader.textContent = globalViewLabels[state.viewMode].title;
 	else if (state.viewMode === 'search') elements.feedHeader.textContent = `Results for “${state.searchQuery}”`;
 	else elements.feedHeader.textContent = source?.name || source?.title || 'Select a subscription';
   elements.articlePane.replaceChildren();
-	if (!source && !['saved', 'search'].includes(state.viewMode)) {
+	if (!source && ![...Object.keys(globalViewLabels), 'search'].includes(state.viewMode)) {
 		elements.articlePane.innerHTML = '<div class="empty-state">Add or choose a subscription to start reading.</div>';
     updateArticleControls();
     return;
   }
   if (!state.articles.length) {
-		const message = state.viewMode === 'saved'
-			? 'No saved articles yet. Use the star on an article to keep it here.'
-			: (state.viewMode === 'search' ? 'No articles matched this search.' : 'No articles are available here yet.');
+		const emptyMessages = {
+			unread: 'You are all caught up.',
+			saved: 'No saved articles yet. Use the star on an article to keep it here.',
+			recent: 'Articles you read from now on will appear here.',
+			search: 'No articles matched this search.',
+		};
+		const message = emptyMessages[state.viewMode] || 'No articles are available here yet.';
 		elements.articlePane.innerHTML = `<div class="empty-state">${message}</div>`;
     updateArticleControls();
     return;
@@ -980,8 +1024,8 @@ async function loadMoreArticles() {
 	state.articlesLoading = true;
 	const requestID = state.articleRequest;
 	let url;
-	if (state.viewMode === 'saved') {
-		url = `/api/articles?saved=1&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}`;
+	if (globalViewLabels[state.viewMode]) {
+		url = `/api/articles?view=${encodeURIComponent(state.viewMode)}&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}`;
 	} else if (state.viewMode === 'search') {
 		url = `/api/search?q=${encodeURIComponent(state.searchQuery)}&limit=${ARTICLE_PAGE_SIZE}&offset=${state.articleOffset}${searchScopeParameters()}`;
 	} else {
@@ -1033,8 +1077,8 @@ async function refreshCurrentView() {
 		await loadGroupArticles(state.selectedGroupId, { hideRead: true });
 	} else if (state.viewMode === 'feed' && state.selectedFeedId !== null) {
 		await loadArticles(state.selectedFeedId, { hideRead: true });
-	} else if (state.viewMode === 'saved') {
-		await loadSavedArticles();
+	} else if (globalViewLabels[state.viewMode]) {
+		await loadGlobalArticles(state.viewMode);
 	} else if (state.viewMode === 'search') {
 		await loadSearchResults();
 	}
@@ -1137,8 +1181,35 @@ async function markAllRead() {
 async function saveFeed() {
   setFormError(elements.feedFormError);
   elements.saveFeed.disabled = true;
+	let feedURL = elements.feedURL.value.trim();
+	const selectedCandidate = elements.feedDiscoveryResults.querySelector('input:checked');
+	if (selectedCandidate && state.discoveredFeedURL === feedURL) {
+		feedURL = selectedCandidate.value;
+	} else {
+		try {
+			elements.saveFeed.textContent = 'Finding feeds...';
+			const result = await fetchJson('/api/feeds/discover', {
+				method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({ url: feedURL }),
+			});
+			const candidates = Array.isArray(result?.feeds) ? result.feeds : [];
+			if (candidates.length > 1) {
+				showDiscoveredFeeds(feedURL, candidates);
+				elements.saveFeed.textContent = 'Add selected feed';
+				return;
+			}
+			if (!candidates.length) throw new Error('No feeds were found.');
+			feedURL = candidates[0].url;
+		} catch (error) {
+			setFormError(elements.feedFormError, error.message);
+			return;
+		} finally {
+			elements.saveFeed.disabled = false;
+			if (elements.feedDiscoveryResults.hidden) elements.saveFeed.textContent = 'Add feed';
+		}
+	}
   const form = new URLSearchParams({
-    url: elements.feedURL.value.trim(),
+	url: feedURL,
     group: elements.feedGroup.value.trim(),
     display_mode: elements.feedDisplay.value,
     sort_direction: elements.feedSort.value,
@@ -1149,6 +1220,7 @@ async function saveFeed() {
     });
     elements.feedModal.close();
     elements.feedForm.reset();
+	clearDiscoveredFeeds();
     await loadGroups();
     await loadFeeds();
     setStatus('Feed added.');
@@ -1156,7 +1228,38 @@ async function saveFeed() {
     setFormError(elements.feedFormError, error.message);
   } finally {
     elements.saveFeed.disabled = false;
+	elements.saveFeed.textContent = 'Add feed';
   }
+}
+
+function clearDiscoveredFeeds() {
+	state.discoveredFeedURL = '';
+	elements.feedDiscoveryResults.replaceChildren();
+	elements.feedDiscoveryResults.hidden = true;
+	elements.saveFeed.textContent = 'Add feed';
+}
+
+function showDiscoveredFeeds(sourceURL, candidates) {
+	state.discoveredFeedURL = sourceURL;
+	elements.feedDiscoveryResults.replaceChildren();
+	candidates.forEach((candidate, index) => {
+		const label = document.createElement('label');
+		label.className = 'feed-discovery-option';
+		const radio = document.createElement('input');
+		radio.type = 'radio';
+		radio.name = 'discovered-feed';
+		radio.value = candidate.url;
+		radio.checked = index === 0;
+		const details = document.createElement('span');
+		const title = document.createElement('strong');
+		title.textContent = candidate.title || 'Untitled feed';
+		const address = document.createElement('small');
+		address.textContent = candidate.url;
+		details.append(title, address);
+		label.append(radio, details);
+		elements.feedDiscoveryResults.appendChild(label);
+	});
+	elements.feedDiscoveryResults.hidden = false;
 }
 
 function openFeedSettings(feedOverride = null) {
@@ -1445,9 +1548,16 @@ function toggleSelectedArticleSaved() {
 
 function bindKeyboard() {
   document.addEventListener('keydown', event => {
+		if (event.key === 'Escape' && elements.feedModal.open) {
+			event.preventDefault();
+			closeAddFeed();
+			return;
+		}
 		if (event.key === 'Escape' && (document.body.classList.contains('mobile-nav-open') || document.body.classList.contains('mobile-actions-open') || document.body.classList.contains('search-open'))) {
+			const searchWasOpen = document.body.classList.contains('search-open');
 			event.preventDefault();
 			closeMobileMenus();
+			if (searchWasOpen) elements.searchViewButton.focus();
 			return;
 		}
     if (document.querySelector('dialog[open]')) return;
@@ -1456,6 +1566,14 @@ function bindKeyboard() {
 		if (event.key === '?') {
 			event.preventDefault();
 			return elements.shortcutsModal.showModal();
+		}
+		if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+			event.preventDefault();
+			return showSearch();
+		}
+		if ((event.key === '+' || (event.key === '=' && event.shiftKey)) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+			event.preventDefault();
+			return openAddFeed();
 		}
 		if (event.shiftKey && key === 'a') {
 			event.preventDefault();
@@ -1488,7 +1606,8 @@ function cacheElements() {
 	statusMessage: document.getElementById('status-message'),
 	favicon: document.getElementById('favicon'),
 	readerLabel: document.getElementById('reader-label'), feedHeader: document.getElementById('feed-header'),
-	savedViewButton: document.getElementById('saved-view-btn'), searchForm: document.getElementById('search-form'),
+	unreadViewButton: document.getElementById('unread-view-btn'), savedViewButton: document.getElementById('saved-view-btn'),
+	recentViewButton: document.getElementById('recent-view-btn'), searchForm: document.getElementById('search-form'),
 	searchViewButton: document.getElementById('search-view-btn'),
 	articleSearch: document.getElementById('article-search'), searchScope: document.getElementById('search-scope'),
 	articlePane: document.getElementById('article-pane'), articleCount: document.getElementById('article-count'),
@@ -1500,6 +1619,7 @@ function cacheElements() {
     feedModal: document.getElementById('feed-modal'), feedForm: document.getElementById('feed-form'),
     feedURL: document.getElementById('feed-url'), feedGroup: document.getElementById('feed-group'),
     feedDisplay: document.getElementById('feed-display-mode'), feedSort: document.getElementById('feed-sort-direction'),
+	feedDiscoveryResults: document.getElementById('feed-discovery-results'),
     feedFormError: document.getElementById('feed-form-error'), saveFeed: document.getElementById('save-feed-btn'),
 	feedSettingsModal: document.getElementById('feed-settings-modal'), feedSettingsForm: document.getElementById('feed-settings-form'),
 	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsURL: document.getElementById('feed-settings-url'),
@@ -1523,6 +1643,7 @@ function cacheElements() {
 	userList: document.getElementById('user-list'), newUserUsername: document.getElementById('new-user-username'),
 	newUserPassword: document.getElementById('new-user-password'), newUserError: document.getElementById('new-user-error'),
 	addUserAccount: document.getElementById('add-user-account-btn'),
+	downloadBackup: document.getElementById('download-backup-btn'),
 	accountModal: document.getElementById('account-modal'), accountForm: document.getElementById('account-form'),
 	accountUsername: document.getElementById('account-username'), accountCurrentPassword: document.getElementById('account-current-password'),
 	accountNewPassword: document.getElementById('account-new-password'), accountConfirmPassword: document.getElementById('account-confirm-password'),
@@ -1546,6 +1667,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 		closeMobileMenus();
 		selectSavedArticles();
 	});
+	elements.unreadViewButton.addEventListener('click', () => {
+		closeMobileMenus();
+		selectGlobalView('unread');
+	});
+	elements.recentViewButton.addEventListener('click', () => {
+		closeMobileMenus();
+		selectGlobalView('recent');
+	});
 	elements.searchViewButton.addEventListener('click', toggleSearch);
 	elements.searchForm.addEventListener('submit', event => {
 		event.preventDefault();
@@ -1555,15 +1684,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 		if (!mobileMenuIsAvailable()) closeMobileMenus();
 	});
   document.getElementById('dismiss-status-btn').addEventListener('click', () => setStatus());
-  document.getElementById('add-feed-btn').addEventListener('click', () => {
-    setFormError(elements.feedFormError);
-    elements.feedModal.showModal();
-    elements.feedURL.focus();
-  });
+  document.getElementById('add-feed-btn').addEventListener('click', openAddFeed);
 	document.getElementById('account-btn').addEventListener('click', openAccount);
 	document.getElementById('cancel-account-btn').addEventListener('click', () => elements.accountModal.close());
 	elements.accountForm.addEventListener('submit', event => { event.preventDefault(); saveAccount(); });
-  document.getElementById('cancel-feed-btn').addEventListener('click', () => elements.feedModal.close());
+  document.getElementById('cancel-feed-btn').addEventListener('click', closeAddFeed);
+	elements.feedURL.addEventListener('input', clearDiscoveredFeeds);
   elements.feedForm.addEventListener('submit', event => { event.preventDefault(); saveFeed(); });
 	elements.feedSettingsButton.addEventListener('click', () => openFeedSettings());
 	document.getElementById('cancel-feed-settings-btn').addEventListener('click', () => elements.feedSettingsModal.close());
@@ -1589,6 +1715,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 	elements.addUserAccount?.addEventListener('click', addUserAccount);
+	elements.downloadBackup?.addEventListener('click', () => {
+		window.location.assign('/api/backup');
+	});
   document.getElementById('cancel-settings-btn').addEventListener('click', () => elements.settingsModal.close());
   elements.settingsForm.addEventListener('submit', event => { event.preventDefault(); saveSettings(); });
 	elements.refreshNow.addEventListener('click', refreshNow);

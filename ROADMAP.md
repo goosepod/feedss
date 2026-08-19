@@ -76,24 +76,37 @@ group.
 
 ## 6. Backups
 
-**Status:** planned
+**Status:** complete
 
 - Create consistent SQLite backups from the admin UI or CLI.
 - Document and test the restore workflow.
 
+Implemented with SQLite's `VACUUM INTO` command, exposed as an administrator-only
+download. The resulting compact database is standalone, integrity-tested, and does
+not depend on the live database's WAL files. Restore steps are documented in the
+README.
+
 ## 7. Feed discovery
 
-**Status:** planned
+**Status:** complete
 
 - Accept ordinary website URLs and discover linked RSS/Atom feeds.
 - Offer a choice when a page advertises multiple feeds.
 
+Implemented by recognizing direct RSS/Atom responses and parsing HTML alternate-feed
+links with relative URL resolution, deduplication, response limits, and an in-dialog
+candidate picker.
+
 ## 8. Global reader views
 
-**Status:** planned
+**Status:** complete
 
 - Add top-level All unread, Saved, and Recently read views.
 - Keep pagination and unread-count behavior consistent with feed and group views.
+
+Implemented as paginated, user-scoped SQLite queries for All unread, Saved articles,
+and Recently read. A persisted `read_at` timestamp records reads after migration so
+the recent view reflects actual reading order without fabricating legacy history.
 
 ## 9. Cross-client synchronization
 

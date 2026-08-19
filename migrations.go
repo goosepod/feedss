@@ -111,6 +111,17 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		Version: 8,
+		Name:    "add_article_read_timestamp",
+		Apply: func(db *sql.DB) error {
+			if err := ensureColumn(db, "articles", "read_at", "TEXT"); err != nil {
+				return err
+			}
+			_, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_articles_read_at ON articles(read_at DESC, id DESC)")
+			return err
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

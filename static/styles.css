@@ -525,6 +525,21 @@ input, select, textarea {
 .dialog-actions .refresh-now { margin-right: auto; }
 .form-error { margin: 8px 0 0; color: var(--danger); }
 .form-result { margin: 8px 0 0; color: #275844; }
+.feed-discovery-results { display: grid; gap: 6px; margin-top: 8px; }
+.feed-discovery-option {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 9px;
+	align-items: start;
+	padding: 9px 10px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--surface-subtle);
+	cursor: pointer;
+}
+.feed-discovery-option input { width: 18px; min-height: 18px; margin-top: 2px; }
+.feed-discovery-option strong, .feed-discovery-option small { display: block; overflow-wrap: anywhere; }
+.feed-discovery-option small { color: var(--muted); font-weight: 500; }
 .problem-feeds-list { display: grid; gap: 12px; margin-top: 18px; }
 .problem-feed {
   padding: 14px;
@@ -542,6 +557,10 @@ input, select, textarea {
 .user-management h3 { margin: 0; font-size: 1.05rem; }
 .user-management > p { margin: 0 0 4px; color: var(--muted); font-size: .9rem; }
 .user-list { display: grid; gap: 4px; margin-bottom: 4px; }
+.data-management { display: grid; gap: 8px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+.data-management h3 { margin: 0; font-size: 1.05rem; }
+.data-management p { margin: 0 0 4px; color: var(--muted); font-size: .9rem; }
+.data-management button { justify-self: start; }
 .user-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 9px; border-radius: 4px; background: var(--surface-subtle); }
 .user-state { color: var(--muted); font-size: .86rem; }
 #add-user-account-btn { justify-self: start; }

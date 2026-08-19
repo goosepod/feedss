@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -982,6 +983,153 @@ func TestArticleSearchUsesFTSAndRespectsScopes(t *testing.T) {
 	}
 	if total != 1 || len(articles) != 1 || articles[0].ID != articleID {
 		t.Fatalf("FTS update trigger did not synchronize: total=%d articles=%#v", total, articles)
+	}
+}
+
+func TestSQLiteBackupIsStandaloneAndConsistent(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	user, err := app.createUser("backup-owner", "password", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.db.Exec("INSERT INTO groups(name, created_by) VALUES('Backed up', ?)", user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "feedss-backup.db")
+	if err := createSQLiteBackup(app.db, backupPath); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := sql.Open("sqlite", backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	var integrity string
+	if err := backup.QueryRow("PRAGMA integrity_check").Scan(&integrity); err != nil {
+		t.Fatal(err)
+	}
+	if integrity != "ok" {
+		t.Fatalf("backup integrity check failed: %s", integrity)
+	}
+	var username, groupName string
+	if err := backup.QueryRow("SELECT u.username, g.name FROM users u JOIN groups g ON g.created_by = u.id WHERE u.id = ?", user.ID).Scan(&username, &groupName); err != nil {
+		t.Fatal(err)
+	}
+	if username != "backup-owner" || groupName != "Backed up" {
+		t.Fatalf("backup did not contain committed data: username=%q group=%q", username, groupName)
+	}
+	if _, err := os.Stat(backupPath + "-wal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup unexpectedly depends on a WAL file: %v", err)
+	}
+}
+
+func TestFeedDiscoveryRecognizesFeedsAndAdvertisedAlternates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/feed.xml":
+			w.Header().Set("Content-Type", "application/rss+xml")
+			fmt.Fprint(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>Primary feed</title></channel></rss>`)
+		case "/atom.xml":
+			w.Header().Set("Content-Type", "application/atom+xml")
+			fmt.Fprint(w, `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Atom feed</title></feed>`)
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<!doctype html><html><head>
+				<link rel="alternate stylesheet" type="text/css" href="/ignore.css">
+				<link rel="alternate" type="application/rss+xml; charset=utf-8" title="News" href="/feed.xml">
+				<link rel="alternate" type="application/atom+xml" title="Updates" href="%s/atom.xml">
+				<link rel="alternate" type="application/rss+xml" title="Duplicate" href="/feed.xml">
+			</head></html>`, serverURLForRequest(r))
+		}
+	}))
+	defer server.Close()
+
+	direct, err := discoverFeedCandidates(server.URL + "/feed.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(direct) != 1 || direct[0].Title != "Primary feed" || direct[0].URL != server.URL+"/feed.xml" {
+		t.Fatalf("unexpected direct feed discovery: %#v", direct)
+	}
+	candidates, err := discoverFeedCandidates(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 || candidates[0].URL != server.URL+"/feed.xml" || candidates[1].URL != server.URL+"/atom.xml" {
+		t.Fatalf("unexpected website discovery: %#v", candidates)
+	}
+}
+
+func serverURLForRequest(r *http.Request) string {
+	return "http://" + r.Host
+}
+
+func TestGlobalArticleViewsTrackRecentReadsAndUserOwnership(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	owner, err := app.createUser("owner", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.createUser("other", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createArticle := func(userID int64, suffix string, read, saved bool, order int) int64 {
+		t.Helper()
+		groupResult, err := app.db.Exec("INSERT INTO groups(name, created_by) VALUES(?, ?)", "Group "+suffix, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		groupID, _ := groupResult.LastInsertId()
+		feedResult, err := app.db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES(?, ?, ?, ?)", "Feed "+suffix, "https://example.com/"+suffix, groupID, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		feedID, _ := feedResult.LastInsertId()
+		articleResult, err := app.db.Exec("INSERT INTO articles(feed_id, title, guid, order_index, is_read, is_saved) VALUES(?, ?, ?, ?, ?, ?)", feedID, "Article "+suffix, suffix, order, boolToInt(read), boolToInt(saved))
+		if err != nil {
+			t.Fatal(err)
+		}
+		articleID, _ := articleResult.LastInsertId()
+		return articleID
+	}
+	unreadID := createArticle(owner.ID, "unread", false, false, 30)
+	savedID := createArticle(owner.ID, "saved", true, true, 20)
+	createArticle(other.ID, "private", false, true, 40)
+
+	unread, total, err := app.listGlobalArticlesPage(owner.ID, "unread", 1, 0)
+	if err != nil || total != 1 || len(unread) != 1 || unread[0].ID != unreadID {
+		t.Fatalf("unexpected unread view: total=%d articles=%#v err=%v", total, unread, err)
+	}
+	saved, total, err := app.listGlobalArticlesPage(owner.ID, "saved", 30, 0)
+	if err != nil || total != 1 || len(saved) != 1 || saved[0].ID != savedID {
+		t.Fatalf("unexpected saved view: total=%d articles=%#v err=%v", total, saved, err)
+	}
+	recent, total, err := app.listGlobalArticlesPage(owner.ID, "recent", 30, 0)
+	if err != nil || total != 0 || len(recent) != 0 {
+		t.Fatalf("legacy read rows should not have fabricated read times: total=%d articles=%#v err=%v", total, recent, err)
+	}
+	form := url.Values{"article_id": {strconv.FormatInt(unreadID, 10)}}
+	request := httptest.NewRequest(http.MethodPost, "/api/articles/read", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response := httptest.NewRecorder()
+	app.handleArticleReadAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("mark read failed: %d %s", response.Code, response.Body.String())
+	}
+	recent, total, err = app.listGlobalArticlesPage(owner.ID, "recent", 30, 0)
+	if err != nil || total != 1 || len(recent) != 1 || recent[0].ID != unreadID {
+		t.Fatalf("unexpected recently read view: total=%d articles=%#v err=%v", total, recent, err)
 	}
 }
 

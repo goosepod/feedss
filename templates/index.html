@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20260819-9">
+  <link rel="stylesheet" href="/static/styles.css?v=20260819-12">
 </head>
 <body>
   <div class="app-shell">
@@ -31,7 +31,7 @@
 		<button id="account-btn" class="button-secondary" type="button">Account</button>
         {{if .IsAdmin}}<button id="settings-btn" class="button-secondary" type="button">Settings</button>{{end}}
         <a class="button button-secondary" href="/logout">Log out</a>
-        <button id="add-feed-btn" type="button">Add feed</button>
+        <button id="add-feed-btn" type="button" aria-keyshortcuts="+" title="Add feed (+)">Add feed</button>
       </nav>
     </header>
 
@@ -48,11 +48,19 @@
 		</div>
 		<section class="nav-section">
 		  <h2>Library</h2>
+		  <button id="unread-view-btn" class="library-item" type="button">
+			<span aria-hidden="true">●</span>
+			<span>All unread</span>
+		  </button>
 		  <button id="saved-view-btn" class="library-item" type="button">
 			<span aria-hidden="true">★</span>
 			<span>Saved articles</span>
 		  </button>
-		  <button id="search-view-btn" class="library-item" type="button" aria-controls="search-form" aria-expanded="false">
+		  <button id="recent-view-btn" class="library-item" type="button">
+			<span aria-hidden="true">↶</span>
+			<span>Recently read</span>
+		  </button>
+		  <button id="search-view-btn" class="library-item" type="button" aria-controls="search-form" aria-expanded="false" aria-keyshortcuts="/" title="Search articles (/)">
 			<span aria-hidden="true">⌕</span>
 			<span>Search articles</span>
 		  </button>
@@ -104,7 +112,8 @@
     <form id="feed-form">
       <h2 id="feed-modal-title">Add feed</h2>
       <label for="feed-url">Feed URL</label>
-      <input id="feed-url" type="url" placeholder="https://example.com/feed.xml" required>
+	  <input id="feed-url" type="url" placeholder="https://example.com or /feed.xml" required>
+	  <div id="feed-discovery-results" class="feed-discovery-results" role="radiogroup" aria-label="Discovered feeds" hidden></div>
       <label for="feed-group">Group</label>
       <input id="feed-group" type="text" placeholder="Inbox">
       <label for="feed-display-mode">Display mode</label>
@@ -237,6 +246,11 @@
 		<p id="new-user-error" class="form-error" role="alert" hidden></p>
 		<button type="button" id="add-user-account-btn" class="button-secondary">Add user</button>
 	  </section>
+	  <section class="data-management" aria-labelledby="data-management-title">
+		<h3 id="data-management-title">Data</h3>
+		<p>Download a consistent SQLite backup containing accounts, subscriptions, articles, and settings.</p>
+		<button type="button" id="download-backup-btn" class="button-secondary">Download backup</button>
+	  </section>
 	  {{end}}
 	  <p id="settings-refresh-result" class="form-result" role="status" aria-live="polite" hidden></p>
       <p id="settings-form-error" class="form-error" role="alert" hidden></p>
@@ -274,6 +288,8 @@
         <div><dt><kbd>C</kbd></dt><dd>Open comments</dd></div>
 		<div><dt><kbd>R</kbd></dt><dd>Refresh current view and hide read articles</dd></div>
 		<div><dt><kbd>S</kbd></dt><dd>Save or unsave selected article</dd></div>
+		<div><dt><kbd>/</kbd></dt><dd>Show search</dd></div>
+		<div><dt><kbd>+</kbd></dt><dd>Add feed</dd></div>
         <div><dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all read</dd></div>
         <div><dt><kbd>?</kbd></dt><dd>Show shortcuts</dd></div>
       </dl>
@@ -295,6 +311,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260819-9"></script>
+  <script src="/static/app.js?v=20260819-12"></script>
 </body>
 </html>
