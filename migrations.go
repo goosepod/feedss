@@ -56,6 +56,16 @@ var migrations = []migration{
 			return ensureColumn(db, "users", "must_change_password", "INTEGER NOT NULL DEFAULT 0")
 		},
 	},
+	{
+		Version: 5,
+		Name:    "add_feed_http_validators",
+		Apply: func(db *sql.DB) error {
+			if err := ensureColumn(db, "feeds", "etag", "TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+			return ensureColumn(db, "feeds", "last_modified", "TEXT NOT NULL DEFAULT ''")
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

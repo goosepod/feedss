@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -37,6 +40,8 @@ var staticFS embed.FS
 const defaultPort = "4317"
 
 const articleFreshnessWindow = 30 * 24 * time.Hour
+const maxFeedResponseBytes = 16 << 20
+const feedRefreshWorkers = 4
 const githubReleasesURL = "https://api.github.com/repos/goosepod/feedss/releases"
 const githubProjectReleasesURL = "https://github.com/goosepod/feedss/releases"
 
@@ -83,6 +88,8 @@ type Feed struct {
 	LastRefreshError        string `json:"last_refresh_error"`
 	LastRefreshAt           string `json:"last_refresh_at"`
 	LastSuccessfulRefreshAt string `json:"last_successful_refresh_at"`
+	ETag                    string `json:"-"`
+	LastModified            string `json:"-"`
 	Selected                bool   `json:"selected"`
 }
 
@@ -115,6 +122,11 @@ type ArticlePage struct {
 type articleCursor struct {
 	OrderIndex int64
 	ID         int64
+}
+
+type feedRefreshTarget struct {
+	ID     int64
+	UserID int64
 }
 
 // App stores runtime state.
@@ -221,6 +233,16 @@ func main() {
 	mux.HandleFunc("/api/users", app.handleUsersAPI)
 	mux.HandleFunc("/api/import-opml", app.handleImportOPML)
 	mux.HandleFunc("/api/export-opml", app.handleExportOPML)
+	mux.HandleFunc("/service-worker.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		data, err := staticFS.ReadFile("static/service-worker.js")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
+	})
 	staticHandler := http.FileServer(http.FS(staticFS))
 	mux.Handle("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -331,6 +353,8 @@ func initSchema(db *sql.DB) error {
 			last_refresh_error TEXT NOT NULL DEFAULT '',
 			last_refresh_at TEXT,
 			last_successful_refresh_at TEXT,
+			etag TEXT NOT NULL DEFAULT '',
+			last_modified TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY(group_id) REFERENCES groups(id),
 			FOREIGN KEY(created_by) REFERENCES users(id)
 		);`,
@@ -360,11 +384,19 @@ func initSchema(db *sql.DB) error {
 			release_check_include_prereleases INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		);`,
+		`CREATE TABLE IF NOT EXISTS sessions (
+			token_hash TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_groups_created_by ON groups(created_by, name);`,
 		`CREATE INDEX IF NOT EXISTS idx_feeds_created_by_group ON feeds(created_by, group_id, title);`,
 		`CREATE INDEX IF NOT EXISTS idx_art_feed_id_order ON articles(feed_id, order_index DESC, published_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles(feed_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id, expires_at);`,
 	}
 
 	for _, q := range queries {
@@ -428,23 +460,58 @@ func (app *App) startBackgroundRefreshLoop() {
 }
 
 func (app *App) refreshAllFeeds() error {
-	rows, err := app.db.Query("SELECT id, created_by, url FROM feeds")
+	rows, err := app.db.Query("SELECT id, created_by FROM feeds")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
+	targets := make([]feedRefreshTarget, 0)
 	for rows.Next() {
-		var id, userID int64
-		var url string
-		if err := rows.Scan(&id, &userID, &url); err != nil {
+		var target feedRefreshTarget
+		if err := rows.Scan(&target.ID, &target.UserID); err != nil {
+			rows.Close()
 			return err
 		}
-		if err := app.refreshFeed(userID, id); err != nil {
-			log.Printf("refresh feed %d: %v", id, err)
+		targets = append(targets, target)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	app.refreshFeeds(targets)
+	return nil
+}
+
+func (app *App) refreshFeeds(targets []feedRefreshTarget) (int, int) {
+	jobs := make(chan feedRefreshTarget)
+	results := make(chan error, len(targets))
+	var workers sync.WaitGroup
+	for range min(feedRefreshWorkers, len(targets)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for target := range jobs {
+				err := app.refreshFeed(target.UserID, target.ID)
+				if err != nil {
+					log.Printf("refresh feed %d: %v", target.ID, err)
+				}
+				results <- err
+			}
+		}()
+	}
+	for _, target := range targets {
+		jobs <- target
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
+	refreshed, failed := 0, 0
+	for err := range results {
+		if err != nil {
+			failed++
+		} else {
+			refreshed++
 		}
 	}
-	return rows.Err()
+	return refreshed, failed
 }
 
 func (app *App) createUser(username, password string, isAdmin bool) (*User, error) {
@@ -487,7 +554,7 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Title:   "feedss",
 		IsAdmin: false,
 	}
-	if session, ok := getSession(r); ok {
+	if session, ok := app.getSession(r); ok {
 		if user, err := app.userByID(session.ID); err == nil {
 			page.IsAdmin = user.IsAdmin
 		}
@@ -545,7 +612,10 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setSession(w, user)
+	if err := app.setSession(w, user); err != nil {
+		http.Error(w, "login failed", http.StatusInternalServerError)
+		return
+	}
 	if user.MustChangePassword {
 		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 		return
@@ -596,7 +666,7 @@ func (app *App) createInitialAdmin(username, password string) (*User, error) {
 }
 
 func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	clearSession(w)
+	app.clearSession(w, r)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -646,14 +716,14 @@ func (app *App) userByID(userID int64) (*User, error) {
 
 func (app *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	session, ok := getSession(r)
+	session, ok := app.getSession(r)
 	if !ok || session == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	user, err := app.userByID(session.ID)
 	if err != nil {
-		clearSession(w)
+		app.clearSession(w, r)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
@@ -691,12 +761,16 @@ func (app *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.MustChangePassword = false
-	setSession(w, user)
+	app.clearSession(w, r)
+	if err := app.setSession(w, user); err != nil {
+		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (app *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) {
-	session, ok := getSession(r)
+	session, ok := app.getSession(r)
 	if !ok || session == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -753,17 +827,21 @@ func (app *App) handleAccountAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	user.Username = username
 	user.Password = passwordHash
-	setSession(w, user)
+	app.clearSession(w, r)
+	if err := app.setSession(w, user); err != nil {
+		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
 	jsonSuccess(w, user)
 }
 
 func (app *App) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/login" || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/static/") {
+		if r.URL.Path == "/login" || r.URL.Path == "/logout" || r.URL.Path == "/service-worker.js" || strings.HasPrefix(r.URL.Path, "/static/") {
 			next.ServeHTTP(w, r)
 			return
 		}
-		session, ok := getSession(r)
+		session, ok := app.getSession(r)
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
@@ -774,7 +852,7 @@ func (app *App) requireAuth(next http.Handler) http.Handler {
 		}
 		user, err := app.userByID(session.ID)
 		if err != nil {
-			clearSession(w)
+			app.clearSession(w, r)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
@@ -786,40 +864,66 @@ func (app *App) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-func setSession(w http.ResponseWriter, user *User) {
+const sessionLifetime = 7 * 24 * time.Hour
+
+func sessionTokenHash(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func (app *App) setSession(w http.ResponseWriter, user *User) error {
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return err
+	}
+	token := base64.RawURLEncoding.EncodeToString(randomBytes)
+	expiresAt := time.Now().UTC().Add(sessionLifetime)
+	if _, err := app.db.Exec(
+		"INSERT INTO sessions(token_hash, user_id, expires_at) VALUES(?, ?, ?)",
+		sessionTokenHash(token), user.ID, expiresAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return err
+	}
+	_, _ = app.db.Exec("DELETE FROM sessions WHERE expires_at <= ?", time.Now().UTC().Format(time.RFC3339Nano))
 	cookie := &http.Cookie{
 		Name:     "feedss_user",
-		Value:    fmt.Sprintf("%d|%s|%d", user.ID, user.Username, boolToInt(user.IsAdmin)),
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400 * 7,
+		MaxAge:   int(sessionLifetime.Seconds()),
+		Expires:  expiresAt,
 	}
 	http.SetCookie(w, cookie)
+	return nil
 }
 
-func clearSession(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "feedss_user", Value: "", Path: "/", MaxAge: -1})
+func (app *App) clearSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("feedss_user"); err == nil && cookie.Value != "" {
+		_, _ = app.db.Exec("DELETE FROM sessions WHERE token_hash = ?", sessionTokenHash(cookie.Value))
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: "feedss_user", Value: "", Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
 }
 
-func getSession(r *http.Request) (*User, bool) {
+func (app *App) getSession(r *http.Request) (*User, bool) {
 	cookie, err := r.Cookie("feedss_user")
+	if err != nil || cookie.Value == "" {
+		return nil, false
+	}
+	var user User
+	err = app.db.QueryRow(`SELECT u.id, u.username, u.password, u.is_admin,
+		u.must_change_password, u.created_at
+		FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = ? AND s.expires_at > ?`,
+		sessionTokenHash(cookie.Value), time.Now().UTC().Format(time.RFC3339Nano),
+	).Scan(&user.ID, &user.Username, &user.Password, &user.IsAdmin, &user.MustChangePassword, &user.CreatedAt)
 	if err != nil {
 		return nil, false
 	}
-	parts := strings.SplitN(cookie.Value, "|", 3)
-	if len(parts) != 3 {
-		return nil, false
-	}
-	userID := strings.TrimSpace(parts[0])
-	if userID == "" {
-		return nil, false
-	}
-	user := &User{ID: 1, Username: parts[1], IsAdmin: intToBool(parts[2])}
-	if parsedID, err := strconv.ParseInt(userID, 10, 64); err == nil {
-		user.ID = parsedID
-	}
-	return user, true
+	return &user, true
 }
 
 func boolToInt(b bool) int {
@@ -842,7 +946,7 @@ func (app *App) handleAddFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
@@ -903,8 +1007,7 @@ func (app *App) ensureGroup(userID int64, groupName string) int64 {
 }
 
 func (app *App) fetchFeedTitle(url string) (string, error) {
-	fp := gofeed.NewParser()
-	feed, err := fp.ParseURL(url)
+	feed, _, _, _, err := fetchFeed(url, "", "")
 	if err != nil {
 		return "Untitled Feed", err
 	}
@@ -912,6 +1015,44 @@ func (app *App) fetchFeedTitle(url string) (string, error) {
 		return feed.Title, nil
 	}
 	return "Untitled Feed", nil
+}
+
+func fetchFeed(rawURL, etag, lastModified string) (*gofeed.Feed, string, string, bool, error) {
+	request, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	request.Header.Set("Accept", "application/atom+xml,application/rss+xml,application/xml,text/xml,*/*;q=0.8")
+	request.Header.Set("User-Agent", "feedss/1.0")
+	if etag != "" {
+		request.Header.Set("If-None-Match", etag)
+	}
+	if lastModified != "" {
+		request.Header.Set("If-Modified-Since", lastModified)
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		return nil, etag, lastModified, true, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, "", "", false, fmt.Errorf("feed returned %s", response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxFeedResponseBytes+1))
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	if len(data) > maxFeedResponseBytes {
+		return nil, "", "", false, errors.New("feed response exceeds 16 MiB")
+	}
+	parsed, err := gofeed.NewParser().Parse(strings.NewReader(string(data)))
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	return parsed, response.Header.Get("ETag"), response.Header.Get("Last-Modified"), false, nil
 }
 
 func normalizePublishedTime(rawValue string, parsed *time.Time) time.Time {
@@ -1127,17 +1268,22 @@ func (app *App) refreshFeed(userID int64, feedID int64) error {
 func (app *App) refreshFeedContent(userID int64, feedID int64) error {
 	var feed Feed
 	err := app.db.QueryRow(
-		"SELECT id, title, url, group_id, display_mode, sort_direction, created_by, created_at FROM feeds WHERE id = ? AND created_by = ?",
+		"SELECT id, title, url, group_id, display_mode, sort_direction, created_by, created_at, COALESCE(etag, ''), COALESCE(last_modified, '') FROM feeds WHERE id = ? AND created_by = ?",
 		feedID,
 		userID,
-	).Scan(&feed.ID, &feed.Title, &feed.URL, &feed.GroupID, &feed.DisplayMode, &feed.SortDirection, &feed.CreatedBy, &feed.CreatedAt)
+	).Scan(&feed.ID, &feed.Title, &feed.URL, &feed.GroupID, &feed.DisplayMode, &feed.SortDirection, &feed.CreatedBy, &feed.CreatedAt, &feed.ETag, &feed.LastModified)
 	if err != nil {
 		return err
 	}
 
-	fp := gofeed.NewParser()
-	parsed, err := fp.ParseURL(feed.URL)
+	parsed, etag, lastModified, notModified, err := fetchFeed(feed.URL, feed.ETag, feed.LastModified)
 	if err != nil {
+		return err
+	}
+	if notModified {
+		return nil
+	}
+	if _, err := app.db.Exec("UPDATE feeds SET etag = ?, last_modified = ? WHERE id = ? AND created_by = ?", etag, lastModified, feed.ID, userID); err != nil {
 		return err
 	}
 	if parsed.Title != "" && feed.Title == "" {
@@ -1271,7 +1417,7 @@ func (app *App) handleGroupsAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1290,7 +1436,7 @@ func (app *App) handleFeedsAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1309,7 +1455,7 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1339,8 +1485,8 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := app.db.Exec(
-		"UPDATE feeds SET url = ?, display_mode = ?, sort_direction = ? WHERE id = ? AND created_by = ?",
-		feedURL, displayMode, sortDirection, feedID, user.ID,
+		"UPDATE feeds SET url = ?, display_mode = ?, sort_direction = ?, etag = CASE WHEN url = ? THEN etag ELSE '' END, last_modified = CASE WHEN url = ? THEN last_modified ELSE '' END WHERE id = ? AND created_by = ?",
+		feedURL, displayMode, sortDirection, feedURL, feedURL, feedID, user.ID,
 	)
 	if err != nil {
 		log.Printf("update feed settings: %v", err)
@@ -1360,7 +1506,7 @@ func (app *App) handleDeleteFeedAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1404,7 +1550,7 @@ func (app *App) handleArticlesAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1510,7 +1656,7 @@ func (app *App) handleArticleReadAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1867,7 +2013,7 @@ func (app *App) handleRefreshAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1878,24 +2024,19 @@ func (app *App) handleRefreshAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to load feeds", http.StatusInternalServerError)
 		return
 	}
-	refreshed := 0
-	failed := 0
 	requestedFeedID := strings.TrimSpace(r.FormValue("feed_id"))
+	targets := make([]feedRefreshTarget, 0, len(feeds))
 	for _, feed := range feeds {
 		if requestedFeedID != "" && strconv.FormatInt(feed.ID, 10) != requestedFeedID {
 			continue
 		}
-		if err := app.refreshFeed(user.ID, feed.ID); err != nil {
-			log.Printf("manual refresh feed %d: %v", feed.ID, err)
-			failed++
-			continue
-		}
-		refreshed++
+		targets = append(targets, feedRefreshTarget{ID: feed.ID, UserID: user.ID})
 	}
-	if requestedFeedID != "" && refreshed == 0 && failed == 0 {
+	if requestedFeedID != "" && len(targets) == 0 {
 		http.Error(w, "feed not found", http.StatusNotFound)
 		return
 	}
+	refreshed, failed := app.refreshFeeds(targets)
 	jsonSuccess(w, map[string]int{"refreshed": refreshed, "failed": failed})
 }
 
@@ -2166,7 +2307,7 @@ func (app *App) listArticlesForGroupCursorPage(userID int64, groupID, sortDirect
 }
 
 func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -2226,7 +2367,7 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleUsersAPI(w http.ResponseWriter, r *http.Request) {
-	session, ok := getSession(r)
+	session, ok := app.getSession(r)
 	if !ok || session == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -2329,7 +2470,7 @@ func (app *App) handleReleaseCheckAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -2494,7 +2635,7 @@ func (app *App) handleImportOPML(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -2599,7 +2740,7 @@ func (app *App) handleExportOPML(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	user, ok := getSession(r)
+	user, ok := app.getSession(r)
 	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

@@ -1,6 +1,6 @@
 # feedss
 
-feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, feed health reporting, multiple local users, manual refresh, release notifications, and a local SQLite database.
+feedss is a small, self-hosted RSS reader for people who want a fast, plain feed list without a lot of ceremony. It supports OPML import/export, nested feed groups, unread counts, per-feed display modes, keyboard navigation, feed health reporting, multiple local users, manual refresh, release notifications, installable PWA support, and a local SQLite database.
 
 See the [changelog](CHANGELOG.md) for release history. Contributions are covered by the [contributing guide](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md), and [security policy](SECURITY.md). feedss is licensed under the [GNU General Public License v3.0](LICENSE).
 
@@ -15,6 +15,8 @@ The administrator can open **Settings → User accounts** to create additional u
 Any signed-in user can open **Account** to change their username or password. Account changes require the current password.
 
 Each user has separate groups, feeds, articles, and unread state.
+
+Sessions use opaque random browser tokens. Only token hashes and expirations are stored in SQLite, and logging out revokes the active session.
 
 ## Run From Source
 
@@ -62,7 +64,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v0.6.1
+    image: ghcr.io/goosepod/feedss:v0.7.0
     container_name: feedss
     ports:
       - "4317:4317"
@@ -86,7 +88,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v0.6.1
+  ghcr.io/goosepod/feedss:v0.7.0
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -104,6 +106,12 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 
 When a feed update fails, feedss stores the latest error and attempt time. A **Problem feeds** button appears only while one or more feeds are failing. From there, you can retry an update, edit the feed URL and display settings, or remove a feed that has gone away. A successful update clears the warning automatically.
 
+Feed updates use HTTP `ETag` and `Last-Modified` validators when servers provide them, avoiding unnecessary downloads and parsing. Automatic and manual batch updates use a bounded worker pool.
+
+## Install as an App
+
+On a supporting browser, use its **Install app** or **Add to Home Screen** action. The installed PWA caches only static application files and a connection-status page; account data, API responses, and articles are not stored in the service-worker cache.
+
 ## Releases
 
-Pushing a tag like `v0.6.1` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.
+Pushing a tag like `v0.7.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

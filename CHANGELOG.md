@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-19
+
+### Added
+
+- SQLite-backed, opaque sessions with token hashing, expiry, logout revocation, and rotation after account or password changes.
+- Conditional feed requests using persisted `ETag` and `Last-Modified` validators, bounded response sizes, and concurrent batch refreshes.
+- Installable PWA metadata, icons, and a service worker with a static offline shell that does not cache private API responses or articles.
+- A living project roadmap with a SQLite-first architecture principle.
+
 ## [0.6.1] - 2026-08-19
 
 ### Fixed
@@ -108,7 +117,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/goosepod/feedss/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/goosepod/feedss/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/goosepod/feedss/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/goosepod/feedss/compare/v0.5.0...v0.5.1

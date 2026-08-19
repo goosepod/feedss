@@ -10,6 +10,7 @@ async function login(page) {
 		await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
 	}
 	await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/static/favicon.svg');
+	await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/static/manifest.webmanifest');
 	await expect(page.locator('.login-card')).toBeVisible();
 	await expect(page.locator('.login-card')).toHaveCSS('display', 'grid');
 	await expect(page.getByLabel('Username')).toHaveCSS('caret-color', 'rgb(24, 32, 42)');
@@ -401,6 +402,20 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
     path: testInfo.outputPath(`feedss-${testInfo.project.name}.png`),
     fullPage: false,
   });
+});
+
+test('installed app provides a private-data-safe offline shell', async ({ page, context }) => {
+	await login(page);
+	await page.evaluate(() => navigator.serviceWorker.ready.then(registration => Boolean(registration.active)));
+	await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+	await context.setOffline(true);
+	try {
+		await page.reload({ waitUntil: 'domcontentloaded' });
+		await expect(page.getByRole('heading', { name: 'feedss is offline' })).toBeVisible();
+		await expect(page.getByText('Reconnect to the server')).toBeVisible();
+	} finally {
+		await context.setOffline(false);
+	}
 });
 
 test('temporary users must choose a permanent password', async ({ page }, testInfo) => {

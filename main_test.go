@@ -18,6 +18,111 @@ import (
 	"github.com/mmcdole/gofeed"
 )
 
+func addSessionCookie(t *testing.T, app *App, request *http.Request, user *User) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	if err := app.setSession(response, user); err != nil {
+		t.Fatal(err)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one session cookie, got %d", len(cookies))
+	}
+	request.AddCookie(cookies[0])
+}
+
+func TestSessionsUseOpaqueRevocableTokens(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	addSessionCookie(t, app, request, user)
+	cookie, err := request.Cookie("feedss_user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cookie.Value, "reader") || strings.Contains(cookie.Value, strconv.FormatInt(user.ID, 10)+"|") {
+		t.Fatalf("session cookie exposes identity data: %q", cookie.Value)
+	}
+	if session, ok := app.getSession(request); !ok || session.ID != user.ID {
+		t.Fatalf("stored session was not accepted: %#v ok=%v", session, ok)
+	}
+	var storedToken string
+	if err := app.db.QueryRow("SELECT token_hash FROM sessions WHERE user_id = ?", user.ID).Scan(&storedToken); err != nil {
+		t.Fatal(err)
+	}
+	if storedToken == cookie.Value {
+		t.Fatal("raw session token was stored in SQLite")
+	}
+
+	forged := httptest.NewRequest(http.MethodGet, "/", nil)
+	forged.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	if _, ok := app.getSession(forged); ok {
+		t.Fatal("forged legacy identity cookie was accepted")
+	}
+
+	app.clearSession(httptest.NewRecorder(), request)
+	if _, ok := app.getSession(request); ok {
+		t.Fatal("revoked session was accepted")
+	}
+}
+
+func TestFetchFeedUsesHTTPValidators(t *testing.T) {
+	const etag = `"feed-v1"`
+	const modified = "Wed, 19 Aug 2026 12:00:00 GMT"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get("If-None-Match") == etag && r.Header.Get("If-Modified-Since") == modified {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Last-Modified", modified)
+		fmt.Fprint(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>Conditional feed</title></channel></rss>`)
+	}))
+	defer server.Close()
+
+	feed, gotETag, gotModified, notModified, err := fetchFeed(server.URL, "", "")
+	if err != nil || notModified || feed.Title != "Conditional feed" {
+		t.Fatalf("unexpected first fetch: feed=%#v notModified=%v err=%v", feed, notModified, err)
+	}
+	if gotETag != etag || gotModified != modified {
+		t.Fatalf("validators = %q %q", gotETag, gotModified)
+	}
+	feed, _, _, notModified, err = fetchFeed(server.URL, gotETag, gotModified)
+	if err != nil || !notModified || feed != nil || requests != 2 {
+		t.Fatalf("unexpected conditional fetch: feed=%#v requests=%d notModified=%v err=%v", feed, requests, notModified, err)
+	}
+}
+
+func TestPWAAssetsAreEmbedded(t *testing.T) {
+	manifest, err := staticFS.ReadFile("static/manifest.webmanifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"display": "standalone"`, `icon-192.png`, `icon-512.png`} {
+		if !strings.Contains(string(manifest), expected) {
+			t.Fatalf("manifest missing %q", expected)
+		}
+	}
+	worker, err := staticFS.ReadFile("static/service-worker.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(worker), "caches.put('/api/") || !strings.Contains(string(worker), "offline.html") {
+		t.Fatal("service worker must avoid private API caching and provide an offline shell")
+	}
+}
+
 func TestAPIModelsUseBrowserFieldNames(t *testing.T) {
 	payload, err := json.Marshal(struct {
 		Group    FeedGroup
@@ -243,7 +348,7 @@ func TestMarkFeedReadStopsAtListBoundary(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/articles/read", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleArticleReadAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -438,7 +543,7 @@ func TestOPMLReimportMovesExistingFeedToParentGroup(t *testing.T) {
 	opml := `<opml version="2.0"><body><outline text="Technology"><outline text="Example Feed" type="rss" xmlUrl="https://example.com/feed.xml"/></outline></body></opml>`
 	request := httptest.NewRequest(http.MethodPost, "/api/import-opml", strings.NewReader(url.Values{"opml": {opml}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleImportOPML(response, request)
 	if response.Code != http.StatusOK {
@@ -470,11 +575,12 @@ func TestManualRefreshWithNoFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{db: db}
-	if _, err := app.createUser("reader", "pw123", false); err != nil {
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/refresh", nil)
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleRefreshAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -573,7 +679,7 @@ func TestDeleteFeedRemovesItsArticles(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/feeds/delete", strings.NewReader(url.Values{"feed_id": {strconv.FormatInt(feedID, 10)}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleDeleteFeedAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -618,7 +724,7 @@ func TestSavingDefaultsDoesNotOverwriteExistingFeedSettings(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|admin|1"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleSettingsAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -646,6 +752,10 @@ func TestReleaseCheckSettingsPersist(t *testing.T) {
 	if err := ensureAppSettings(db); err != nil {
 		t.Fatal(err)
 	}
+	user, err := app.createUser("admin", "pw123", true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	form := url.Values{
 		"refresh_interval_min":              {"15"},
 		"max_articles_per_feed":             {"500"},
@@ -657,7 +767,7 @@ func TestReleaseCheckSettingsPersist(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|admin|1"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleSettingsAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -695,7 +805,7 @@ func TestFeedSettingsUpdateSelectedFeed(t *testing.T) {
 	form := url.Values{"feed_id": {strconv.FormatInt(feedID, 10)}, "display_mode": {"full"}, "sort_direction": {"asc"}}
 	request := httptest.NewRequest(http.MethodPost, "/api/feeds/update", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "1|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleUpdateFeedAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -786,7 +896,7 @@ func TestTemporaryUserMustChooseNewPassword(t *testing.T) {
 	form := url.Values{"username": {"reader"}, "temporary_password": {"temporary"}}
 	request := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(admin.ID, 10) + "|owner|1"})
+	addSessionCookie(t, app, request, admin)
 	response := httptest.NewRecorder()
 	app.handleUsersAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -799,7 +909,7 @@ func TestTemporaryUserMustChooseNewPassword(t *testing.T) {
 
 	protected := app.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	request = httptest.NewRequest(http.MethodGet, "/", nil)
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(reader.ID, 10) + "|reader|0"})
+	addSessionCookie(t, app, request, reader)
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/change-password" {
@@ -809,7 +919,7 @@ func TestTemporaryUserMustChooseNewPassword(t *testing.T) {
 	changeForm := url.Values{"new_password": {"permanent-password"}, "confirm_password": {"permanent-password"}}
 	request = httptest.NewRequest(http.MethodPost, "/change-password", strings.NewReader(changeForm.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(reader.ID, 10) + "|reader|0"})
+	addSessionCookie(t, app, request, reader)
 	response = httptest.NewRecorder()
 	app.handleChangePassword(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/" {
@@ -873,7 +983,7 @@ func TestUserCanChangeUsernameAndPassword(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/account", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: "feedss_user", Value: strconv.FormatInt(user.ID, 10) + "|reader|0"})
+	addSessionCookie(t, app, request, user)
 	response := httptest.NewRecorder()
 	app.handleAccountAPI(response, request)
 	if response.Code != http.StatusOK {
@@ -886,8 +996,17 @@ func TestUserCanChangeUsernameAndPassword(t *testing.T) {
 	if err != nil || updated.ID != user.ID {
 		t.Fatalf("updated login failed: %#v err=%v", updated, err)
 	}
-	if cookies := response.Result().Cookies(); len(cookies) == 0 || !strings.Contains(cookies[0].Value, "renamed-reader") {
-		t.Fatalf("updated session cookie not returned: %#v", cookies)
+	var authenticated bool
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == "feedss_user" && cookie.MaxAge > 0 {
+			check := httptest.NewRequest(http.MethodGet, "/", nil)
+			check.AddCookie(cookie)
+			session, ok := app.getSession(check)
+			authenticated = ok && session.Username == "renamed-reader"
+		}
+	}
+	if !authenticated {
+		t.Fatal("updated session cookie was not rotated")
 	}
 }
 
