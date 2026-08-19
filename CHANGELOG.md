@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-19
+
+### Fixed
+
+- Keep the startup banner and subsequent log messages on one output stream so Docker preserves their order.
+- Prevent browsers from reusing an outdated application shell after a container upgrade.
+
 ## [0.6.0] - 2026-08-19
 
 ### Added
@@ -101,7 +108,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/goosepod/feedss/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/goosepod/feedss/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/goosepod/feedss/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/goosepod/feedss/compare/v0.4.0...v0.5.0

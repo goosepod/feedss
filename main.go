@@ -163,6 +163,10 @@ type ReleaseCheckResult struct {
 }
 
 func main() {
+	// Keep the banner and structured startup notices on the same stream. Docker
+	// does not preserve ordering when it merges stdout and stderr.
+	log.SetOutput(os.Stdout)
+
 	cfg := AppConfig{
 		DBPath: getenv("APP_DB_PATH", filepath.Join("data", "feedss.db")),
 		Port:   getenv("APP_PORT", defaultPort),
@@ -470,6 +474,7 @@ func (app *App) createUserWithPasswordState(username, password string, isAdmin, 
 }
 
 func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -493,6 +498,7 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	setup, err := app.needsInitialAdmin()
 	if err != nil {
 		http.Error(w, "login failed", http.StatusInternalServerError)
@@ -639,6 +645,7 @@ func (app *App) userByID(userID int64) (*User, error) {
 }
 
 func (app *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	session, ok := getSession(r)
 	if !ok || session == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)

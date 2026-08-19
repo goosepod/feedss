@@ -56,6 +56,25 @@ func TestStartupBannerIncludesRuntimeInformation(t *testing.T) {
 	}
 }
 
+func TestIndexDisablesBrowserCaching(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	app.handleIndex(response, request)
+
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if !strings.Contains(response.Body.String(), `id="account-btn"`) {
+		t.Fatal("current app shell is missing the account button")
+	}
+}
+
 func TestReleaseVersionComparison(t *testing.T) {
 	for _, test := range []struct {
 		left  string
