@@ -122,6 +122,105 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		Version: 9,
+		Name:    "add_cross_client_sync_revisions",
+		Apply: func(db *sql.DB) error {
+			statements := []string{
+				`CREATE TABLE IF NOT EXISTS sync_revisions (
+					user_id INTEGER PRIMARY KEY,
+					revision INTEGER NOT NULL DEFAULT 0,
+					article_revision INTEGER NOT NULL DEFAULT 0,
+					subscription_revision INTEGER NOT NULL DEFAULT 0,
+					updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+					FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+				)`,
+				`INSERT OR IGNORE INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					SELECT id, 1, 1, 1 FROM users`,
+				`CREATE TRIGGER IF NOT EXISTS articles_sync_insert AFTER INSERT ON articles BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					SELECT created_by, 1, 1, 0 FROM feeds WHERE id = new.feed_id
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						article_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS articles_sync_state_update AFTER UPDATE OF is_read, is_saved ON articles
+				WHEN old.is_read IS NOT new.is_read OR old.is_saved IS NOT new.is_saved BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					SELECT created_by, 1, 1, 0 FROM feeds WHERE id = new.feed_id
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						article_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS articles_sync_delete BEFORE DELETE ON articles BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					SELECT created_by, 1, 1, 0 FROM feeds WHERE id = old.feed_id
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						article_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS feeds_sync_insert AFTER INSERT ON feeds BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(new.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS feeds_sync_update AFTER UPDATE OF title, url, group_id, display_mode, sort_direction ON feeds
+				WHEN old.title IS NOT new.title OR old.url IS NOT new.url OR old.group_id IS NOT new.group_id OR old.display_mode IS NOT new.display_mode OR old.sort_direction IS NOT new.sort_direction BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(new.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS feeds_sync_delete BEFORE DELETE ON feeds BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(old.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS groups_sync_insert AFTER INSERT ON groups BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(new.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS groups_sync_update AFTER UPDATE OF name ON groups
+				WHEN old.name IS NOT new.name BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(new.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+				`CREATE TRIGGER IF NOT EXISTS groups_sync_delete BEFORE DELETE ON groups BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(old.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`,
+			}
+			for _, statement := range statements {
+				if _, err := db.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

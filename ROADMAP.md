@@ -110,7 +110,7 @@ the recent view reflects actual reading order without fabricating legacy history
 
 ## 9. Cross-client synchronization
 
-**Status:** planned
+**Status:** complete
 
 - Reflect read state, saved articles, subscription changes, and unread counts across
   every open browser and installed app for the same account.
@@ -119,3 +119,9 @@ the recent view reflects actual reading order without fabricating legacy history
 - Let foreground clients apply changes promptly without replacing or repositioning
   the article list currently being read.
 - Reconcile immediately when a backgrounded phone or PWA returns to the foreground.
+
+Implemented with per-user monotonic revisions maintained by SQLite triggers for
+article, feed, and group mutations. Foreground clients poll the inexpensive revision
+endpoint every three seconds and reconcile immediately on focus or visibility
+changes. Visible read and saved state is patched in place while fresh subscription
+metadata updates navigation and unread counts without replacing the reader list.

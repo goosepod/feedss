@@ -16,6 +16,13 @@ Any signed-in user can open **Account** to change their username or password. Ac
 
 Each user has separate groups, feeds, articles, saved state, reading history, and unread state.
 
+When the same account is open in multiple browsers or installed apps, read state,
+saved stars, subscriptions, and unread counts synchronize automatically. Active
+clients reconcile within a few seconds without replacing the article list being
+read, and a backgrounded client reconciles as soon as it returns to the foreground.
+SQLite maintains the per-user revision counters, so synchronization also works when
+multiple feedss processes share the same database.
+
 Sessions use opaque random browser tokens. Only token hashes and expirations are stored in SQLite, and logging out revokes the active session.
 
 ## Run From Source
@@ -64,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v0.9.0
+    image: ghcr.io/goosepod/feedss:v1.0.0
     container_name: feedss
     ports:
       - "4317:4317"
@@ -88,7 +95,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v0.9.0
+  ghcr.io/goosepod/feedss:v1.0.0
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -146,4 +153,4 @@ On a supporting browser, use its **Install app** or **Add to Home Screen** actio
 
 ## Releases
 
-Pushing a tag like `v0.9.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.
+Pushing a tag like `v1.0.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

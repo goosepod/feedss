@@ -1,6 +1,6 @@
 const ARTICLE_PAGE_SIZE = 30;
-const FOREGROUND_SUBSCRIPTION_POLL_INTERVAL_MS = 30_000;
-const BACKGROUND_SUBSCRIPTION_POLL_INTERVAL_MS = 15 * 60_000;
+const FOREGROUND_SYNC_POLL_INTERVAL_MS = 3_000;
+const BACKGROUND_SYNC_POLL_INTERVAL_MS = 15 * 60_000;
 const DEFAULT_TITLE = 'feedss';
 const STATIC_FAVICON = '/static/favicon.svg';
 
@@ -17,6 +17,8 @@ const state = {
 	readThroughID: null,
 	articlesLoading: false,
 	subscriptionMetadataLoading: false,
+	syncLoading: false,
+	syncRevision: 0,
   selectedGroupId: null,
 	selectedFeedId: null,
   viewMode: 'group',
@@ -45,7 +47,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const elements = {};
-let subscriptionPollTimer = null;
+let syncPollTimer = null;
 
 function mobileMenuIsAvailable() {
 	return window.matchMedia('(max-width: 760px)').matches;
@@ -271,7 +273,7 @@ async function loadFeeds() {
 }
 
 async function refreshSubscriptionMetadata() {
-	if (state.subscriptionMetadataLoading) return;
+	if (state.subscriptionMetadataLoading) return false;
 	state.subscriptionMetadataLoading = true;
 	try {
 		const [groups, feeds] = await Promise.all([
@@ -285,36 +287,89 @@ async function refreshSubscriptionMetadata() {
 		);
 		renderSubscriptions();
 		updateArticleControls();
+		return true;
 	} catch {
 		// Background metadata polling should never interrupt reading.
+		return false;
 	} finally {
 		state.subscriptionMetadataLoading = false;
 	}
 }
 
-function subscriptionMetadataPollInterval(background = document.hidden || !document.hasFocus()) {
+function applySyncedArticleStates(syncedArticles) {
+	const syncedByID = new Map((Array.isArray(syncedArticles) ? syncedArticles : []).map(article => [Number(article.id), article]));
+	for (const article of state.articles) {
+		const synced = syncedByID.get(Number(article.id));
+		if (!synced) continue;
+		article.is_read = Boolean(synced.is_read);
+		article.is_saved = Boolean(synced.is_saved);
+		const articleElement = elements.articlePane.querySelector(`[data-article-id="${article.id}"]`);
+		articleElement?.classList.toggle('read', article.is_read);
+		articleElement?.classList.toggle('unread', !article.is_read);
+		if (article.is_read) articleElement?.querySelector('.mark-read')?.remove();
+		const saveButton = articleElement?.querySelector('.save-article');
+		if (saveButton) {
+			saveButton.classList.toggle('saved', article.is_saved);
+			saveButton.textContent = article.is_saved ? '★' : '☆';
+			saveButton.setAttribute('aria-label', `${article.is_saved ? 'Remove from saved' : 'Save'}: ${article.title || 'Untitled article'}`);
+			saveButton.title = article.is_saved ? 'Remove from saved' : 'Save article';
+		}
+	}
+	updateArticleControls();
+}
+
+async function establishSyncBaseline() {
+	const data = await fetchJson('/api/sync');
+	state.syncRevision = Math.max(0, Number(data?.revision) || 0);
+}
+
+async function synchronizeClient() {
+	if (state.syncLoading) return;
+	state.syncLoading = true;
+	try {
+		const articleIDs = state.articles.slice(0, 500).map(article => article.id).join(',');
+		const query = new URLSearchParams({ since: String(state.syncRevision) });
+		if (articleIDs) query.set('article_ids', articleIDs);
+		const data = await fetchJson(`/api/sync?${query}`);
+		if (data.articles_changed) applySyncedArticleStates(data.articles);
+		if (data.subscriptions_changed && !await refreshSubscriptionMetadata()) return;
+		if (data.articles_changed) {
+			if (state.viewMode === 'unread') state.articleTotal = totalUnreadCount();
+			if (state.viewMode === 'saved') state.articleTotal = Math.max(0, Number(data.saved_count) || 0);
+			if (state.viewMode === 'recent') state.articleTotal = Math.max(0, Number(data.recently_read_count) || 0);
+			updateArticleControls();
+		}
+		state.syncRevision = Math.max(state.syncRevision, Number(data.revision) || 0);
+	} catch {
+		// Synchronization retries on the next poll and never interrupts reading.
+	} finally {
+		state.syncLoading = false;
+	}
+}
+
+function syncPollInterval(background = document.hidden || !document.hasFocus()) {
 	return background
-		? BACKGROUND_SUBSCRIPTION_POLL_INTERVAL_MS
-		: FOREGROUND_SUBSCRIPTION_POLL_INTERVAL_MS;
+		? BACKGROUND_SYNC_POLL_INTERVAL_MS
+		: FOREGROUND_SYNC_POLL_INTERVAL_MS;
 }
 
-function scheduleSubscriptionMetadataPoll() {
-	if (subscriptionPollTimer !== null) window.clearTimeout(subscriptionPollTimer);
-	subscriptionPollTimer = window.setTimeout(async () => {
-		await refreshSubscriptionMetadata();
-		scheduleSubscriptionMetadataPoll();
-	}, subscriptionMetadataPollInterval());
+function scheduleSyncPoll() {
+	if (syncPollTimer !== null) window.clearTimeout(syncPollTimer);
+	syncPollTimer = window.setTimeout(async () => {
+		await synchronizeClient();
+		scheduleSyncPoll();
+	}, syncPollInterval());
 }
 
-function startSubscriptionMetadataPolling() {
+function startSyncPolling() {
 	const handleAttentionChange = () => {
 		const focused = !document.hidden && document.hasFocus();
-		scheduleSubscriptionMetadataPoll();
-		if (focused) void refreshSubscriptionMetadata();
+		scheduleSyncPoll();
+		if (focused) void synchronizeClient();
 	};
-	scheduleSubscriptionMetadataPoll();
+	scheduleSyncPoll();
 	window.addEventListener('focus', handleAttentionChange);
-	window.addEventListener('blur', scheduleSubscriptionMetadataPoll);
+	window.addEventListener('blur', scheduleSyncPoll);
 	document.addEventListener('visibilitychange', handleAttentionChange);
 }
 
@@ -1738,6 +1793,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 	elements.articlePane.addEventListener('scroll', maybeLoadMoreArticles, { passive: true });
   bindKeyboard();
 	try {
+		await establishSyncBaseline();
+	} catch {
+		// A zero baseline safely reconciles all current state on the first retry.
+	}
+	try {
 		await loadSettings();
 	} catch {
 		// Reading remains available with built-in defaults if settings cannot be loaded.
@@ -1745,9 +1805,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await loadGroups();
     await loadFeeds();
+		await synchronizeClient();
 	} catch (error) {
 		setStatus(`Could not load feeds: ${error.message}`, 'error');
 	}
-	startSubscriptionMetadataPolling();
+	startSyncPolling();
 	checkForNewRelease();
 });

@@ -1133,6 +1133,96 @@ func TestGlobalArticleViewsTrackRecentReadsAndUserOwnership(t *testing.T) {
 	}
 }
 
+func TestCrossClientSyncUsesDurableUserScopedSQLiteRevisions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "feedss_test.db")
+	writer, err := NewApp(AppConfig{DBPath: dbPath, Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.db.Close()
+	reader, err := NewApp(AppConfig{DBPath: dbPath, Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.db.Close()
+	owner, err := writer.createUser("sync-owner", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := writer.createUser("sync-other", "password", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestSync := func(since string, articleIDs ...int64) SyncResponse {
+		t.Helper()
+		query := url.Values{}
+		if since != "" {
+			query.Set("since", since)
+		}
+		if len(articleIDs) > 0 {
+			parts := make([]string, len(articleIDs))
+			for index, articleID := range articleIDs {
+				parts[index] = strconv.FormatInt(articleID, 10)
+			}
+			query.Set("article_ids", strings.Join(parts, ","))
+		}
+		request := httptest.NewRequest(http.MethodGet, "/api/sync?"+query.Encode(), nil)
+		addSessionCookie(t, reader, request, owner)
+		response := httptest.NewRecorder()
+		reader.handleSyncAPI(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("sync failed: %d %s", response.Code, response.Body.String())
+		}
+		var result SyncResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	baseline := requestSync("")
+	groupResult, err := writer.db.Exec("INSERT INTO groups(name, created_by) VALUES('Synced', ?)", owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, _ := groupResult.LastInsertId()
+	feedResult, err := writer.db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES('Synced feed', 'https://example.com/sync.xml', ?, ?)", groupID, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := feedResult.LastInsertId()
+	articleResult, err := writer.db.Exec("INSERT INTO articles(feed_id, title, guid, order_index) VALUES(?, 'Synced article', 'sync-article', 1)", feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	articleID, _ := articleResult.LastInsertId()
+
+	afterInsert := requestSync(strconv.FormatInt(baseline.Revision, 10), articleID)
+	if afterInsert.Revision <= baseline.Revision || !afterInsert.ArticlesChanged || !afterInsert.SubscriptionsChanged {
+		t.Fatalf("insert changes were not synchronized: baseline=%#v response=%#v", baseline, afterInsert)
+	}
+	if len(afterInsert.Articles) != 1 || afterInsert.Articles[0].ID != articleID || afterInsert.Articles[0].IsRead || afterInsert.Articles[0].IsSaved {
+		t.Fatalf("unexpected initial synchronized article: %#v", afterInsert.Articles)
+	}
+	if _, err := writer.db.Exec("UPDATE articles SET is_read = 1, is_saved = 1 WHERE id = ?", articleID); err != nil {
+		t.Fatal(err)
+	}
+	afterState := requestSync(strconv.FormatInt(afterInsert.Revision, 10), articleID)
+	if !afterState.ArticlesChanged || !afterState.SubscriptionsChanged || len(afterState.Articles) != 1 || !afterState.Articles[0].IsRead || !afterState.Articles[0].IsSaved {
+		t.Fatalf("article state was not synchronized: %#v", afterState)
+	}
+
+	otherBaseline := afterState.Revision
+	if _, err := writer.db.Exec("INSERT INTO groups(name, created_by) VALUES('Private', ?)", other.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterOtherUser := requestSync(strconv.FormatInt(otherBaseline, 10), articleID)
+	if afterOtherUser.Revision != otherBaseline || afterOtherUser.ArticlesChanged || afterOtherUser.SubscriptionsChanged {
+		t.Fatalf("another user's mutation leaked into synchronization: %#v", afterOtherUser)
+	}
+}
+
 func TestFirstLoginCreatesAdministratorWithoutDefaultAccount(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
 	if err != nil {

@@ -122,6 +122,21 @@ type ArticlePage struct {
 	ReadThroughID         *int64    `json:"read_through_id,omitempty"`
 }
 
+type SyncedArticleState struct {
+	ID      int64 `json:"id"`
+	IsRead  bool  `json:"is_read"`
+	IsSaved bool  `json:"is_saved"`
+}
+
+type SyncResponse struct {
+	Revision             int64                `json:"revision"`
+	ArticlesChanged      bool                 `json:"articles_changed"`
+	SubscriptionsChanged bool                 `json:"subscriptions_changed"`
+	SavedCount           int                  `json:"saved_count"`
+	RecentlyReadCount    int                  `json:"recently_read_count"`
+	Articles             []SyncedArticleState `json:"articles"`
+}
+
 type articleCursor struct {
 	OrderIndex int64
 	ID         int64
@@ -241,6 +256,7 @@ func main() {
 	mux.HandleFunc("/api/articles", app.handleArticlesAPI)
 	mux.HandleFunc("/api/articles/read", app.handleArticleReadAPI)
 	mux.HandleFunc("/api/articles/saved", app.handleArticleSavedAPI)
+	mux.HandleFunc("/api/sync", app.handleSyncAPI)
 	mux.HandleFunc("/api/search", app.handleSearchAPI)
 	mux.HandleFunc("/api/image", app.handleImageProxy)
 	mux.HandleFunc("/api/favicon", app.handleFaviconProxy)
@@ -1937,6 +1953,121 @@ func (app *App) handleArticleSavedAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonSuccess(w, map[string]any{"status": "ok", "saved": saved})
+}
+
+func (app *App) handleSyncAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	sinceText := strings.TrimSpace(r.URL.Query().Get("since"))
+	since := int64(0)
+	if sinceText != "" {
+		parsed, err := strconv.ParseInt(sinceText, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid sync revision", http.StatusBadRequest)
+			return
+		}
+		since = parsed
+	}
+
+	var revision, articleRevision, subscriptionRevision int64
+	if err := app.db.QueryRow(`SELECT
+		COALESCE((SELECT revision FROM sync_revisions WHERE user_id = ?), 0),
+		COALESCE((SELECT article_revision FROM sync_revisions WHERE user_id = ?), 0),
+		COALESCE((SELECT subscription_revision FROM sync_revisions WHERE user_id = ?), 0)`,
+		user.ID, user.ID, user.ID,
+	).Scan(&revision, &articleRevision, &subscriptionRevision); err != nil {
+		log.Printf("load sync revision: %v", err)
+		http.Error(w, "failed to load sync state", http.StatusInternalServerError)
+		return
+	}
+
+	response := SyncResponse{Revision: revision, Articles: []SyncedArticleState{}}
+	if sinceText == "" {
+		jsonSuccess(w, response)
+		return
+	}
+	response.ArticlesChanged = articleRevision > since
+	response.SubscriptionsChanged = subscriptionRevision > since || response.ArticlesChanged
+	if response.ArticlesChanged {
+		if err := app.db.QueryRow(`SELECT
+			COALESCE(SUM(CASE WHEN a.is_saved = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN a.read_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+			FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE f.created_by = ?`, user.ID,
+		).Scan(&response.SavedCount, &response.RecentlyReadCount); err != nil {
+			log.Printf("load synchronized article counts: %v", err)
+			http.Error(w, "failed to load synchronized article counts", http.StatusInternalServerError)
+			return
+		}
+		articleIDs, err := parseSyncArticleIDs(r.URL.Query().Get("article_ids"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(articleIDs) > 0 {
+			placeholders := make([]string, len(articleIDs))
+			args := make([]any, 0, len(articleIDs)+1)
+			for index, articleID := range articleIDs {
+				placeholders[index] = "?"
+				args = append(args, articleID)
+			}
+			args = append(args, user.ID)
+			rows, err := app.db.Query(`SELECT a.id, a.is_read, a.is_saved
+				FROM articles a
+				JOIN feeds f ON f.id = a.feed_id
+				WHERE a.id IN (`+strings.Join(placeholders, ",")+`) AND f.created_by = ?`, args...)
+			if err != nil {
+				log.Printf("load synchronized article states: %v", err)
+				http.Error(w, "failed to load synchronized articles", http.StatusInternalServerError)
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var article SyncedArticleState
+				if err := rows.Scan(&article.ID, &article.IsRead, &article.IsSaved); err != nil {
+					http.Error(w, "failed to load synchronized articles", http.StatusInternalServerError)
+					return
+				}
+				response.Articles = append(response.Articles, article)
+			}
+			if err := rows.Err(); err != nil {
+				http.Error(w, "failed to load synchronized articles", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	jsonSuccess(w, response)
+}
+
+func parseSyncArticleIDs(raw string) ([]int64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 500 {
+		return nil, errors.New("too many article ids")
+	}
+	seen := make(map[int64]struct{}, len(parts))
+	articleIDs := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		articleID, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || articleID < 1 {
+			return nil, errors.New("invalid article ids")
+		}
+		if _, exists := seen[articleID]; exists {
+			continue
+		}
+		seen[articleID] = struct{}{}
+		articleIDs = append(articleIDs, articleID)
+	}
+	return articleIDs, nil
 }
 
 func (app *App) handleSearchAPI(w http.ResponseWriter, r *http.Request) {

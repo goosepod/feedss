@@ -102,6 +102,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		{ id: 202, feed_id: 21, feed_title: 'Board Game Quest', title: 'Second short article', link: 'https://example.com/202', description: '<p>Second summary.</p><img src="https://images.example.com/second.png" alt="Second article image">', published_at: '2026-08-16T11:00:00Z', order_index: 200, is_read: false },
 	]);
 	let addedFeedURL = '';
+	let syncRevision = 1;
+	let syncArticleRevision = 1;
+	let syncSubscriptionRevision = 1;
 	await page.route('**/api/image?url=**', route => route.fulfill({
 		contentType: 'image/png',
 		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
@@ -112,6 +115,24 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	}));
 	await page.route('**/api/groups', route => route.fulfill({ json: groups }));
 	await page.route('**/api/feeds', route => route.fulfill({ json: feeds }));
+	await page.route('**/api/sync**', route => {
+		const params = new URL(route.request().url()).searchParams;
+		const sinceText = params.get('since');
+		const since = Number(sinceText || 0);
+		const articlesChanged = sinceText !== null && syncArticleRevision > since;
+		const subscriptionsChanged = sinceText !== null && (syncSubscriptionRevision > since || articlesChanged);
+		const requestedIDs = new Set((params.get('article_ids') || '').split(',').filter(Boolean).map(Number));
+		return route.fulfill({ json: {
+			revision: syncRevision,
+			articles_changed: articlesChanged,
+			subscriptions_changed: subscriptionsChanged,
+			saved_count: articles.filter(article => article.is_saved).length,
+			recently_read_count: articles.filter(article => article.is_read).length,
+			articles: articlesChanged ? articles.filter(article => requestedIDs.has(article.id)).map(article => ({
+				id: article.id, is_read: Boolean(article.is_read), is_saved: Boolean(article.is_saved),
+			})) : [],
+		} });
+	});
 	await page.route(/\/api\/articles\?(?:.*)$/, route => {
 		const params = new URL(route.request().url()).searchParams;
 		const view = params.get('view') || (params.get('saved') === '1' ? 'saved' : '');
@@ -356,9 +377,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(articleRows).toHaveCount(30);
 	await expect(page.locator('[data-article-id="1"]')).toHaveCount(0);
 	expect(await page.evaluate(() => [
-		subscriptionMetadataPollInterval(false),
-		subscriptionMetadataPollInterval(true),
-	])).toEqual([30_000, 15 * 60_000]);
+		syncPollInterval(false),
+		syncPollInterval(true),
+	])).toEqual([3_000, 15 * 60_000]);
 	const articleIDsBeforeMetadataRefresh = await articleRows.evaluateAll(rows => rows.map(row => row.dataset.articleId));
 	groups[0].unread_count = 125;
 	feeds[0].unread_count = 85;
@@ -370,6 +391,31 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	feeds[0].unread_count = 79;
 	await page.evaluate(() => refreshSubscriptionMetadata());
 	await expect(articleRows.first().locator('.article-site-icon')).toHaveAttribute('src', /\/api\/favicon\?url=https%3A%2F%2Fnews\.ycombinator\.com/);
+	const synchronizedArticle = articles.find(article => article.id === 29);
+	synchronizedArticle.is_read = true;
+	synchronizedArticle.is_saved = true;
+	groups[0].unread_count -= 1;
+	feeds.find(feed => feed.id === synchronizedArticle.feed_id).unread_count -= 1;
+	syncRevision += 1;
+	syncArticleRevision = syncRevision;
+	const articleIDsBeforeSync = await articleRows.evaluateAll(rows => rows.map(row => row.dataset.articleId));
+	await page.evaluate(() => synchronizeClient());
+	await expect(page.locator('[data-article-id="29"]')).toHaveClass(/read/);
+	await expect(page.locator('[data-article-id="29"] .save-article')).toHaveAttribute('aria-label', 'Remove from saved: Example article 29');
+	expect(await articleRows.evaluateAll(rows => rows.map(row => row.dataset.articleId))).toEqual(articleIDsBeforeSync);
+	feeds.push({ id: 99, group_id: 1, title: 'Remote feed', url: 'https://example.com/remote.xml', display_mode: 'headline', sort_direction: 'desc', unread_count: 0 });
+	groups[0].feed_count += 1;
+	syncRevision += 1;
+	syncSubscriptionRevision = syncRevision;
+	await page.evaluate(() => synchronizeClient());
+	await openMobileSubscriptions(page);
+	await expect(page.locator('.feed-item').filter({ hasText: 'Remote feed' })).toBeVisible();
+	if (await page.getByRole('button', { name: 'Open subscriptions', exact: true }).isVisible()) await page.keyboard.press('Escape');
+	synchronizedArticle.is_saved = false;
+	syncRevision += 1;
+	syncArticleRevision = syncRevision;
+	await page.evaluate(() => synchronizeClient());
+	await expect(page.locator('[data-article-id="29"] .save-article')).toHaveAttribute('aria-label', 'Save: Example article 29');
 	const firstHeadline = articleRows.first().locator('.article-title');
 	await expect(firstHeadline).toHaveAttribute('href', 'https://example.com/2');
 	await expect(firstHeadline).toHaveAttribute('target', '_blank');
