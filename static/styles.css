@@ -522,6 +522,7 @@ input, select, textarea {
 .checkbox-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-weight: 600; }
 .checkbox-row input { width: 18px; min-height: 18px; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.dialog-actions .dialog-action-leading { margin-right: auto; }
 .dialog-actions .refresh-now { margin-right: auto; }
 .form-error { margin: 8px 0 0; color: var(--danger); }
 .form-result { margin: 8px 0 0; color: #275844; }

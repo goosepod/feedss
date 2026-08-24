@@ -601,6 +601,23 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
     path: testInfo.outputPath(`feedss-${testInfo.project.name}.png`),
     fullPage: false,
   });
+
+	await openMobileSubscriptions(page);
+	const boardGamesToggle = boardGamesGroup.locator('.group-toggle');
+	if (await boardGamesToggle.getAttribute('aria-expanded') === 'false') await boardGamesToggle.click();
+	await boardGamesGroup.locator('.feed-item').filter({ hasText: 'Board Game Quest' }).click();
+	await page.getByRole('button', { name: 'Feed settings', exact: true }).click();
+	const removalSettingsDialog = page.getByRole('dialog', { name: 'Feed settings' });
+	await removalSettingsDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
+	const removeFeedDialog = page.getByRole('dialog', { name: 'Remove feed?' });
+	await expect(removeFeedDialog).toContainText('Remove Board Game Quest?');
+	await removeFeedDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(removalSettingsDialog).toBeVisible();
+	await removalSettingsDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
+	await removeFeedDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
+	await expect(removeFeedDialog).toBeHidden();
+	await expect(boardGamesGroup.locator('.feed-item').filter({ hasText: 'Board Game Quest' })).toHaveCount(0);
+	await expect(page.locator('#status-message')).toHaveText('Board Game Quest removed.');
 });
 
 test('installed app provides a private-data-safe offline shell', async ({ page, context }) => {

@@ -34,6 +34,7 @@ const state = {
 	expandedGroupIds: new Set(),
 	expandedArticleIds: new Set(),
 	feedPendingDeletion: null,
+	feedDeletionReturnDialog: null,
 	editingFeedId: null,
 	discoveredFeedURL: '',
 };
@@ -1438,7 +1439,11 @@ async function retryFeed(feed, button) {
 
 function requestDeleteFeed(feed) {
 	state.feedPendingDeletion = feed.id;
-	elements.problemFeedsModal.close();
+	state.feedDeletionReturnDialog = elements.feedSettingsModal.open
+		? 'feed-settings'
+		: elements.problemFeedsModal.open ? 'problem-feeds' : null;
+	if (elements.feedSettingsModal.open) elements.feedSettingsModal.close();
+	if (elements.problemFeedsModal.open) elements.problemFeedsModal.close();
 	elements.deleteFeedSummary.textContent = `Remove ${feed.title || feed.url}?`;
 	setFormError(elements.deleteFeedError);
 	elements.deleteFeedModal.showModal();
@@ -1456,6 +1461,7 @@ async function deletePendingFeed() {
 		});
 		if (state.selectedFeedId === feed.id) state.selectedFeedId = null;
 		state.feedPendingDeletion = null;
+		state.feedDeletionReturnDialog = null;
 		elements.deleteFeedModal.close();
 		await loadGroups();
 		await loadFeeds();
@@ -1680,7 +1686,7 @@ function cacheElements() {
 	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsURL: document.getElementById('feed-settings-url'),
 	feedSettingsDisplay: document.getElementById('feed-settings-display-mode'),
 	feedSettingsSort: document.getElementById('feed-settings-sort-direction'), feedSettingsError: document.getElementById('feed-settings-error'),
-	saveFeedSettings: document.getElementById('save-feed-settings-btn'),
+	removeFeed: document.getElementById('remove-feed-btn'), saveFeedSettings: document.getElementById('save-feed-settings-btn'),
     settingsModal: document.getElementById('settings-modal'), settingsForm: document.getElementById('settings-form'),
     settingsRefresh: document.getElementById('settings-refresh-interval'), settingsMax: document.getElementById('settings-max-articles'),
 	settingsDisplay: document.getElementById('settings-display-mode'), settingsSort: document.getElementById('settings-sort-order'),
@@ -1749,12 +1755,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 	elements.feedSettingsButton.addEventListener('click', () => openFeedSettings());
 	document.getElementById('cancel-feed-settings-btn').addEventListener('click', () => elements.feedSettingsModal.close());
 	elements.feedSettingsForm.addEventListener('submit', event => { event.preventDefault(); saveFeedSettings(); });
+	elements.removeFeed.addEventListener('click', () => {
+		const feed = state.feeds.find(item => item.id === state.editingFeedId);
+		if (feed) requestDeleteFeed(feed);
+	});
 	elements.problemFeedsButton.addEventListener('click', openProblemFeeds);
 	document.getElementById('close-problem-feeds-btn').addEventListener('click', () => elements.problemFeedsModal.close());
 	document.getElementById('cancel-delete-feed-btn').addEventListener('click', () => {
+		const feed = state.feeds.find(item => item.id === state.feedPendingDeletion);
+		const returnDialog = state.feedDeletionReturnDialog;
 		elements.deleteFeedModal.close();
 		state.feedPendingDeletion = null;
-		if (failedFeeds().length) openProblemFeeds();
+		state.feedDeletionReturnDialog = null;
+		if (returnDialog === 'feed-settings' && feed) openFeedSettings(feed);
+		else if (returnDialog === 'problem-feeds') openProblemFeeds();
 	});
 	elements.confirmDeleteFeed.addEventListener('click', deletePendingFeed);
 	const settingsButton = document.getElementById('settings-btn');
