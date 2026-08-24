@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20260820-13">
+  <link rel="stylesheet" href="/static/styles.css?v=20260824-14">
 </head>
 <body>
   <div class="app-shell">
@@ -96,6 +96,7 @@
             <h1 id="feed-header">Select a feed</h1>
           </div>
           <div class="article-controls" aria-label="Article actions">
+			<button id="group-settings-btn" class="button-secondary" type="button" hidden>Group settings</button>
 			<button id="feed-settings-btn" class="button-secondary" type="button" hidden>Feed settings</button>
             <span id="article-count" aria-live="polite">0 articles</span>
             <button id="mark-all-read-btn" class="button-secondary" type="button" disabled>Mark all read</button>
@@ -139,6 +140,10 @@
 		<form id="feed-settings-form">
 			<h2 id="feed-settings-title">Feed settings</h2>
 			<p id="feed-settings-name" class="dialog-subtitle"></p>
+			<label for="feed-settings-feed-title">Feed name</label>
+			<input id="feed-settings-feed-title" type="text" maxlength="200" required>
+			<label for="feed-settings-group">Group</label>
+			<select id="feed-settings-group" required></select>
 			<label for="feed-settings-url">Feed URL</label>
 			<input id="feed-settings-url" type="url" required>
 			<label for="feed-settings-display-mode">Display mode</label>
@@ -159,6 +164,34 @@
 				<button type="submit" id="save-feed-settings-btn">Save feed</button>
 			</div>
 		</form>
+	</dialog>
+
+	<dialog id="group-settings-modal" aria-labelledby="group-settings-title">
+		<form id="group-settings-form">
+			<h2 id="group-settings-title">Group settings</h2>
+			<p id="group-settings-summary" class="dialog-subtitle"></p>
+			<label for="group-settings-name">Group name</label>
+			<input id="group-settings-name" type="text" maxlength="200" required>
+			<p id="group-settings-error" class="form-error" role="alert" hidden></p>
+			<div class="dialog-actions">
+				<button type="button" id="remove-group-btn" class="button-danger dialog-action-leading">Remove group</button>
+				<button type="button" id="cancel-group-settings-btn" class="button-secondary">Cancel</button>
+				<button type="submit" id="save-group-settings-btn">Save group</button>
+			</div>
+		</form>
+	</dialog>
+
+	<dialog id="delete-group-modal" aria-labelledby="delete-group-title" aria-describedby="delete-group-summary">
+		<div class="confirmation-dialog">
+			<h2 id="delete-group-title">Remove group?</h2>
+			<p id="delete-group-summary"></p>
+			<p class="dialog-note">Only empty groups can be removed. This action cannot be undone.</p>
+			<p id="delete-group-error" class="form-error" role="alert" hidden></p>
+			<div class="dialog-actions">
+				<button type="button" id="cancel-delete-group-btn" class="button-secondary">Cancel</button>
+				<button type="button" id="confirm-delete-group-btn" class="button-danger">Remove group</button>
+			</div>
+		</div>
 	</dialog>
 
 	<dialog id="account-modal" aria-labelledby="account-modal-title">
@@ -312,6 +345,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260820-13"></script>
+  <script src="/static/app.js?v=20260824-14"></script>
 </body>
 </html>

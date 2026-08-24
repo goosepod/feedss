@@ -1,8 +1,8 @@
-const CACHE_NAME = 'feedss-shell-v13';
+const CACHE_NAME = 'feedss-shell-v14';
 const SHELL_ASSETS = [
   '/static/offline.html',
-	'/static/styles.css?v=20260820-13',
-	'/static/app.js?v=20260820-13',
+	'/static/styles.css?v=20260824-14',
+	'/static/app.js?v=20260824-14',
   '/static/favicon.svg',
   '/static/icon-192.png',
   '/static/icon-512.png',

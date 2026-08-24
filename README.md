@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.0.0
+    image: ghcr.io/goosepod/feedss:v1.1.0
     container_name: feedss
     ports:
       - "4317:4317"
@@ -95,7 +95,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.0.0
+  ghcr.io/goosepod/feedss:v1.1.0
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -117,6 +117,13 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 The Add feed form accepts either a direct RSS/Atom URL or an ordinary website URL.
 When a website advertises one feed, feedss uses it automatically. When it advertises
 multiple feeds, choose the one you want before adding the subscription.
+
+## Organizing Subscriptions
+
+Select a feed and open **Feed settings** to rename it, move it to another group,
+change its URL or reading preferences, or remove it. Select a group and open
+**Group settings** to rename it. Empty groups can also be removed there; move or
+remove their feeds first.
 
 The Library section provides paginated views for all unread articles, saved articles,
 and articles read since upgrading to the reading-history schema. Search remains an
@@ -153,4 +160,4 @@ On a supporting browser, use its **Install app** or **Add to Home Screen** actio
 
 ## Releases
 
-Pushing a tag like `v1.0.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.
+Pushing a tag like `v1.1.0` runs the release workflow. It builds Windows, Linux, and macOS binaries, creates or updates the GitHub release, and publishes Docker images to GHCR.

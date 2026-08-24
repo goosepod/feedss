@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-24
+
 ### Added
 
 - Feed removal from the standard per-feed settings dialog, with confirmation before stored articles are deleted.
+- Subscription organization controls for renaming and moving feeds and for renaming or removing empty groups.
 
 ## [1.0.0] - 2026-08-20
 

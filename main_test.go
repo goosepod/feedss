@@ -821,6 +821,105 @@ func TestFeedSettingsUpdateSelectedFeed(t *testing.T) {
 	}
 }
 
+func TestSubscriptionOrganizationIsUserScoped(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "feedss_test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := initSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{db: db}
+	owner, err := app.createUser("owner", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.createUser("other", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxID := app.ensureGroup(owner.ID, "Inbox")
+	archiveID := app.ensureGroup(owner.ID, "Archive")
+	emptyID := app.ensureGroup(owner.ID, "Empty")
+	otherGroupID := app.ensureGroup(other.ID, "Private")
+	result, err := db.Exec("INSERT INTO feeds(title, url, group_id, created_by) VALUES('Original', 'https://example.com/rss', ?, ?)", inboxID, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, _ := result.LastInsertId()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/feeds/update", strings.NewReader(url.Values{
+		"feed_id": {strconv.FormatInt(feedID, 10)}, "title": {"Renamed"},
+		"url": {"https://example.com/new.xml"}, "group_id": {strconv.FormatInt(archiveID, 10)},
+		"display_mode": {"full"}, "sort_direction": {"asc"},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response := httptest.NewRecorder()
+	app.handleUpdateFeedAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected feed update response %d: %s", response.Code, response.Body.String())
+	}
+	var title string
+	var groupID int64
+	if err := db.QueryRow("SELECT title, group_id FROM feeds WHERE id = ?", feedID).Scan(&title, &groupID); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Renamed" || groupID != archiveID {
+		t.Fatalf("feed organization not updated: title=%q group=%d", title, groupID)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/feeds/update", strings.NewReader(url.Values{
+		"feed_id": {strconv.FormatInt(feedID, 10)}, "title": {"Leaked"},
+		"url": {"https://example.com/new.xml"}, "group_id": {strconv.FormatInt(otherGroupID, 10)},
+		"display_mode": {"full"}, "sort_direction": {"asc"},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response = httptest.NewRecorder()
+	app.handleUpdateFeedAPI(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected foreign group rejection, got %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/groups/update", strings.NewReader(url.Values{
+		"group_id": {strconv.FormatInt(archiveID, 10)}, "name": {"Reading later"},
+	}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response = httptest.NewRecorder()
+	app.handleUpdateGroupAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected group update response %d: %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/groups/delete", strings.NewReader(url.Values{"group_id": {strconv.FormatInt(archiveID, 10)}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response = httptest.NewRecorder()
+	app.handleDeleteGroupAPI(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected non-empty group rejection, got %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/groups/delete", strings.NewReader(url.Values{"group_id": {strconv.FormatInt(emptyID, 10)}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addSessionCookie(t, app, request, owner)
+	response = httptest.NewRecorder()
+	app.handleDeleteGroupAPI(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected empty group deletion response %d: %s", response.Code, response.Body.String())
+	}
+	var emptyCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM groups WHERE id = ?", emptyID).Scan(&emptyCount); err != nil {
+		t.Fatal(err)
+	}
+	if emptyCount != 0 {
+		t.Fatal("empty group was not removed")
+	}
+}
+
 func TestDefaultSettingsUse500ArticleRetention(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "feedss_test.db")
 	db, err := sql.Open("sqlite", dbPath)

@@ -125,3 +125,14 @@ article, feed, and group mutations. Foreground clients poll the inexpensive revi
 endpoint every three seconds and reconcile immediately on focus or visibility
 changes. Visible read and saved state is patched in place while fresh subscription
 metadata updates navigation and unread counts without replacing the reader list.
+
+## 10. Subscription organization
+
+**Status:** complete
+
+- Rename feeds and move them between groups from per-feed settings.
+- Rename groups and remove groups after their feeds have been moved or removed.
+- Keep every mutation user-scoped and synchronized across open clients.
+
+Implemented with user-scoped feed and group update endpoints, empty-group deletion
+guards, confirmation for destructive actions, and responsive settings dialogs.

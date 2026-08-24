@@ -250,6 +250,8 @@ func main() {
 	mux.HandleFunc("/feed/add", app.handleAddFeed)
 	mux.HandleFunc("/api/feeds/discover", app.handleDiscoverFeedsAPI)
 	mux.HandleFunc("/api/groups", app.handleGroupsAPI)
+	mux.HandleFunc("/api/groups/update", app.handleUpdateGroupAPI)
+	mux.HandleFunc("/api/groups/delete", app.handleDeleteGroupAPI)
 	mux.HandleFunc("/api/feeds", app.handleFeedsAPI)
 	mux.HandleFunc("/api/feeds/update", app.handleUpdateFeedAPI)
 	mux.HandleFunc("/api/feeds/delete", app.handleDeleteFeedAPI)
@@ -1606,6 +1608,98 @@ func (app *App) handleGroupsAPI(w http.ResponseWriter, r *http.Request) {
 	jsonSuccess(w, groups)
 }
 
+func (app *App) handleUpdateGroupAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	groupID := strings.TrimSpace(r.FormValue("group_id"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	if groupID == "" || name == "" || len(name) > 200 {
+		http.Error(w, "invalid group settings", http.StatusBadRequest)
+		return
+	}
+	var duplicateCount int
+	if err := app.db.QueryRow(
+		"SELECT COUNT(*) FROM groups WHERE created_by = ? AND id != ? AND name = ? COLLATE NOCASE",
+		user.ID, groupID, name,
+	).Scan(&duplicateCount); err != nil {
+		http.Error(w, "failed to update group", http.StatusInternalServerError)
+		return
+	}
+	if duplicateCount > 0 {
+		http.Error(w, "a group with that name already exists", http.StatusConflict)
+		return
+	}
+	result, err := app.db.Exec("UPDATE groups SET name = ? WHERE id = ? AND created_by = ?", name, groupID, user.ID)
+	if err != nil {
+		log.Printf("update group: %v", err)
+		http.Error(w, "failed to update group", http.StatusInternalServerError)
+		return
+	}
+	updated, _ := result.RowsAffected()
+	if updated == 0 {
+		http.Error(w, "group not found", http.StatusNotFound)
+		return
+	}
+	jsonSuccess(w, map[string]any{"status": "ok", "name": name})
+}
+
+func (app *App) handleDeleteGroupAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := app.getSession(r)
+	if !ok || user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	groupID := strings.TrimSpace(r.FormValue("group_id"))
+	if groupID == "" {
+		http.Error(w, "group_id is required", http.StatusBadRequest)
+		return
+	}
+	result, err := app.db.Exec(
+		`DELETE FROM groups
+		WHERE id = ? AND created_by = ?
+		AND NOT EXISTS (SELECT 1 FROM feeds WHERE group_id = groups.id)`,
+		groupID, user.ID,
+	)
+	if err != nil {
+		log.Printf("delete group: %v", err)
+		http.Error(w, "failed to remove group", http.StatusInternalServerError)
+		return
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted > 0 {
+		jsonSuccess(w, map[string]string{"status": "ok"})
+		return
+	}
+	var feedCount int
+	if err := app.db.QueryRow(
+		"SELECT COUNT(f.id) FROM groups g LEFT JOIN feeds f ON f.group_id = g.id WHERE g.id = ? AND g.created_by = ? GROUP BY g.id",
+		groupID, user.ID,
+	).Scan(&feedCount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "group not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to remove group", http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, "move or remove the feeds in this group first", http.StatusConflict)
+}
+
 func (app *App) handleFeedsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1641,27 +1735,55 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	feedID := strings.TrimSpace(r.FormValue("feed_id"))
 	feedURL := strings.TrimSpace(r.FormValue("url"))
+	feedTitle := strings.TrimSpace(r.FormValue("title"))
+	groupIDText := strings.TrimSpace(r.FormValue("group_id"))
 	displayMode := strings.TrimSpace(r.FormValue("display_mode"))
 	sortDirection := strings.TrimSpace(r.FormValue("sort_direction"))
 	validDisplayModes := map[string]bool{"headline": true, "headline-blurb": true, "full": true}
-	if feedURL == "" && feedID != "" {
-		if err := app.db.QueryRow("SELECT url FROM feeds WHERE id = ? AND created_by = ?", feedID, user.ID).Scan(&feedURL); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				http.Error(w, "feed not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "failed to load feed", http.StatusInternalServerError)
-			return
-		}
-	}
-	parsedURL, urlErr := url.Parse(feedURL)
-	if feedID == "" || urlErr != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || !validDisplayModes[displayMode] || (sortDirection != "asc" && sortDirection != "desc") {
+	if feedID == "" {
 		http.Error(w, "invalid feed settings", http.StatusBadRequest)
 		return
 	}
+	var currentTitle, currentURL string
+	var currentGroupID int64
+	if err := app.db.QueryRow(
+		"SELECT title, url, group_id FROM feeds WHERE id = ? AND created_by = ?", feedID, user.ID,
+	).Scan(&currentTitle, &currentURL, &currentGroupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "feed not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "failed to load feed", http.StatusInternalServerError)
+		return
+	}
+	if !r.Form.Has("url") {
+		feedURL = currentURL
+	}
+	if !r.Form.Has("title") {
+		feedTitle = currentTitle
+	}
+	groupID := currentGroupID
+	if r.Form.Has("group_id") {
+		parsedGroupID, err := strconv.ParseInt(groupIDText, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid feed settings", http.StatusBadRequest)
+			return
+		}
+		groupID = parsedGroupID
+	}
+	parsedURL, urlErr := url.Parse(feedURL)
+	if feedTitle == "" || len(feedTitle) > 200 || urlErr != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || !validDisplayModes[displayMode] || (sortDirection != "asc" && sortDirection != "desc") {
+		http.Error(w, "invalid feed settings", http.StatusBadRequest)
+		return
+	}
+	var groupExists bool
+	if err := app.db.QueryRow("SELECT EXISTS(SELECT 1 FROM groups WHERE id = ? AND created_by = ?)", groupID, user.ID).Scan(&groupExists); err != nil || !groupExists {
+		http.Error(w, "group not found", http.StatusBadRequest)
+		return
+	}
 	result, err := app.db.Exec(
-		"UPDATE feeds SET url = ?, display_mode = ?, sort_direction = ?, etag = CASE WHEN url = ? THEN etag ELSE '' END, last_modified = CASE WHEN url = ? THEN last_modified ELSE '' END WHERE id = ? AND created_by = ?",
-		feedURL, displayMode, sortDirection, feedURL, feedURL, feedID, user.ID,
+		"UPDATE feeds SET title = ?, url = ?, group_id = ?, display_mode = ?, sort_direction = ?, etag = CASE WHEN url = ? THEN etag ELSE '' END, last_modified = CASE WHEN url = ? THEN last_modified ELSE '' END WHERE id = ? AND created_by = ?",
+		feedTitle, feedURL, groupID, displayMode, sortDirection, feedURL, feedURL, feedID, user.ID,
 	)
 	if err != nil {
 		log.Printf("update feed settings: %v", err)
@@ -1673,7 +1795,7 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed not found", http.StatusNotFound)
 		return
 	}
-	jsonSuccess(w, map[string]string{"status": "ok", "url": feedURL, "display_mode": displayMode, "sort_direction": sortDirection})
+	jsonSuccess(w, map[string]any{"status": "ok", "title": feedTitle, "url": feedURL, "group_id": groupID, "display_mode": displayMode, "sort_direction": sortDirection})
 }
 
 func (app *App) handleDeleteFeedAPI(w http.ResponseWriter, r *http.Request) {

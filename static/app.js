@@ -36,6 +36,8 @@ const state = {
 	feedPendingDeletion: null,
 	feedDeletionReturnDialog: null,
 	editingFeedId: null,
+	editingGroupId: null,
+	groupPendingDeletion: null,
 	discoveredFeedURL: '',
 };
 
@@ -1041,6 +1043,7 @@ function updateArticleControls() {
 	elements.articleCount.textContent = `${total} article${total === 1 ? '' : 's'}`;
 	elements.markAllRead.disabled = !source || unread === 0;
 	elements.feedSettingsButton.hidden = state.viewMode !== 'feed' || state.selectedFeedId === null;
+	elements.groupSettingsButton.hidden = state.viewMode !== 'group' || state.selectedGroupId === null;
 }
 
 async function moveArticle(offset) {
@@ -1324,6 +1327,14 @@ function openFeedSettings(feedOverride = null) {
 	state.editingFeedId = feed.id;
 	setFormError(elements.feedSettingsError);
 	elements.feedSettingsName.textContent = feed.title || feed.url;
+	elements.feedSettingsTitle.value = feed.title || '';
+	elements.feedSettingsGroup.replaceChildren(...state.groups.map(group => {
+		const option = document.createElement('option');
+		option.value = String(group.id);
+		option.textContent = group.name;
+		return option;
+	}));
+	elements.feedSettingsGroup.value = String(feed.group_id);
 	elements.feedSettingsURL.value = feed.url || '';
 	elements.feedSettingsDisplay.value = feed.display_mode || 'headline';
 	elements.feedSettingsSort.value = feed.sort_direction || 'desc';
@@ -1338,21 +1349,96 @@ async function saveFeedSettings() {
 	const displayMode = elements.feedSettingsDisplay.value;
 	const sortDirection = elements.feedSettingsSort.value;
 	const feedURL = elements.feedSettingsURL.value.trim();
+	const feedTitle = elements.feedSettingsTitle.value.trim();
+	const groupID = Number(elements.feedSettingsGroup.value);
 	try {
 		await fetchJson('/api/feeds/update', {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({ feed_id: feed.id, url: feedURL, display_mode: displayMode, sort_direction: sortDirection }),
+			body: new URLSearchParams({ feed_id: feed.id, title: feedTitle, group_id: groupID, url: feedURL, display_mode: displayMode, sort_direction: sortDirection }),
 		});
+		feed.title = feedTitle;
+		feed.group_id = groupID;
 		feed.url = feedURL;
 		feed.display_mode = displayMode;
 		feed.sort_direction = sortDirection;
 		elements.feedSettingsModal.close();
-		if (feed.id === state.selectedFeedId) await loadArticles(feed.id, { hideRead: state.hideReadArticles });
+		state.selectedGroupId = groupID;
+		state.expandedGroupIds.add(groupID);
+		await loadGroups();
+		await loadFeeds();
 		setStatus('Feed settings saved.');
 	} catch (error) {
 		setFormError(elements.feedSettingsError, error.message);
 	} finally {
 		elements.saveFeedSettings.disabled = false;
+	}
+}
+
+function openGroupSettings(groupOverride = null) {
+	const group = groupOverride || state.groups.find(item => item.id === state.selectedGroupId);
+	if (!group) return;
+	state.editingGroupId = group.id;
+	setFormError(elements.groupSettingsError);
+	elements.groupSettingsName.value = group.name;
+	elements.groupSettingsSummary.textContent = `${group.feed_count} feed${group.feed_count === 1 ? '' : 's'} in this group.`;
+	elements.removeGroup.disabled = group.feed_count !== 0;
+	elements.removeGroup.title = group.feed_count === 0 ? '' : 'Move or remove this group’s feeds first';
+	elements.groupSettingsModal.showModal();
+}
+
+async function saveGroupSettings() {
+	const group = state.groups.find(item => item.id === state.editingGroupId);
+	if (!group) return;
+	setFormError(elements.groupSettingsError);
+	elements.saveGroupSettings.disabled = true;
+	const name = elements.groupSettingsName.value.trim();
+	try {
+		await fetchJson('/api/groups/update', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ group_id: group.id, name }),
+		});
+		group.name = name;
+		elements.groupSettingsModal.close();
+		await loadGroups();
+		await loadFeeds();
+		setStatus('Group settings saved.');
+	} catch (error) {
+		setFormError(elements.groupSettingsError, error.message);
+	} finally {
+		elements.saveGroupSettings.disabled = false;
+	}
+}
+
+function requestDeleteGroup() {
+	const group = state.groups.find(item => item.id === state.editingGroupId);
+	if (!group || group.feed_count !== 0) return;
+	state.groupPendingDeletion = group.id;
+	elements.groupSettingsModal.close();
+	elements.deleteGroupSummary.textContent = `Remove ${group.name}?`;
+	setFormError(elements.deleteGroupError);
+	elements.deleteGroupModal.showModal();
+}
+
+async function deletePendingGroup() {
+	const group = state.groups.find(item => item.id === state.groupPendingDeletion);
+	if (!group) return;
+	elements.confirmDeleteGroup.disabled = true;
+	setFormError(elements.deleteGroupError);
+	try {
+		await fetchJson('/api/groups/delete', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ group_id: group.id }),
+		});
+		state.groupPendingDeletion = null;
+		if (state.selectedGroupId === group.id) state.selectedGroupId = null;
+		elements.deleteGroupModal.close();
+		await loadGroups();
+		await loadFeeds();
+		setStatus(`${group.name} removed.`);
+	} catch (error) {
+		setFormError(elements.deleteGroupError, error.message);
+	} finally {
+		elements.confirmDeleteGroup.disabled = false;
 	}
 }
 
@@ -1676,17 +1762,24 @@ function cacheElements() {
 	markAllReadModal: document.getElementById('mark-all-read-modal'),
 	markAllReadSummary: document.getElementById('mark-all-read-modal-summary'),
 	confirmMarkAllRead: document.getElementById('confirm-mark-all-read-btn'),
-	feedSettingsButton: document.getElementById('feed-settings-btn'),
+	feedSettingsButton: document.getElementById('feed-settings-btn'), groupSettingsButton: document.getElementById('group-settings-btn'),
     feedModal: document.getElementById('feed-modal'), feedForm: document.getElementById('feed-form'),
     feedURL: document.getElementById('feed-url'), feedGroup: document.getElementById('feed-group'),
     feedDisplay: document.getElementById('feed-display-mode'), feedSort: document.getElementById('feed-sort-direction'),
 	feedDiscoveryResults: document.getElementById('feed-discovery-results'),
     feedFormError: document.getElementById('feed-form-error'), saveFeed: document.getElementById('save-feed-btn'),
 	feedSettingsModal: document.getElementById('feed-settings-modal'), feedSettingsForm: document.getElementById('feed-settings-form'),
-	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsURL: document.getElementById('feed-settings-url'),
+	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsTitle: document.getElementById('feed-settings-feed-title'),
+	feedSettingsGroup: document.getElementById('feed-settings-group'), feedSettingsURL: document.getElementById('feed-settings-url'),
 	feedSettingsDisplay: document.getElementById('feed-settings-display-mode'),
 	feedSettingsSort: document.getElementById('feed-settings-sort-direction'), feedSettingsError: document.getElementById('feed-settings-error'),
 	removeFeed: document.getElementById('remove-feed-btn'), saveFeedSettings: document.getElementById('save-feed-settings-btn'),
+	groupSettingsModal: document.getElementById('group-settings-modal'), groupSettingsForm: document.getElementById('group-settings-form'),
+	groupSettingsName: document.getElementById('group-settings-name'), groupSettingsSummary: document.getElementById('group-settings-summary'),
+	groupSettingsError: document.getElementById('group-settings-error'), removeGroup: document.getElementById('remove-group-btn'),
+	saveGroupSettings: document.getElementById('save-group-settings-btn'), deleteGroupModal: document.getElementById('delete-group-modal'),
+	deleteGroupSummary: document.getElementById('delete-group-summary'), deleteGroupError: document.getElementById('delete-group-error'),
+	confirmDeleteGroup: document.getElementById('confirm-delete-group-btn'),
     settingsModal: document.getElementById('settings-modal'), settingsForm: document.getElementById('settings-form'),
     settingsRefresh: document.getElementById('settings-refresh-interval'), settingsMax: document.getElementById('settings-max-articles'),
 	settingsDisplay: document.getElementById('settings-display-mode'), settingsSort: document.getElementById('settings-sort-order'),
@@ -1753,12 +1846,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 	elements.feedURL.addEventListener('input', clearDiscoveredFeeds);
   elements.feedForm.addEventListener('submit', event => { event.preventDefault(); saveFeed(); });
 	elements.feedSettingsButton.addEventListener('click', () => openFeedSettings());
+	elements.groupSettingsButton.addEventListener('click', () => openGroupSettings());
 	document.getElementById('cancel-feed-settings-btn').addEventListener('click', () => elements.feedSettingsModal.close());
 	elements.feedSettingsForm.addEventListener('submit', event => { event.preventDefault(); saveFeedSettings(); });
 	elements.removeFeed.addEventListener('click', () => {
 		const feed = state.feeds.find(item => item.id === state.editingFeedId);
 		if (feed) requestDeleteFeed(feed);
 	});
+	document.getElementById('cancel-group-settings-btn').addEventListener('click', () => elements.groupSettingsModal.close());
+	elements.groupSettingsForm.addEventListener('submit', event => { event.preventDefault(); saveGroupSettings(); });
+	elements.removeGroup.addEventListener('click', requestDeleteGroup);
+	document.getElementById('cancel-delete-group-btn').addEventListener('click', () => {
+		const group = state.groups.find(item => item.id === state.groupPendingDeletion);
+		elements.deleteGroupModal.close();
+		state.groupPendingDeletion = null;
+		if (group) openGroupSettings(group);
+	});
+	elements.confirmDeleteGroup.addEventListener('click', deletePendingGroup);
 	elements.problemFeedsButton.addEventListener('click', openProblemFeeds);
 	document.getElementById('close-problem-feeds-btn').addEventListener('click', () => elements.problemFeedsModal.close());
 	document.getElementById('cancel-delete-feed-btn').addEventListener('click', () => {

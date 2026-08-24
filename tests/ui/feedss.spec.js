@@ -199,7 +199,40 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 			json: { articles: matching.slice(offset, offset + limit), total: matching.length, has_more: offset + limit < matching.length },
 		});
 	});
-	await page.route('**/api/feeds/update', route => route.fulfill({ json: { status: 'ok' } }));
+	await page.route('**/api/feeds/update', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const feed = feeds.find(item => item.id === Number(params.get('feed_id')));
+		if (!feed) return route.fulfill({ status: 404, body: 'feed not found' });
+		const previousGroup = groups.find(group => group.id === feed.group_id);
+		const nextGroupID = Number(params.get('group_id') || feed.group_id);
+		const nextGroup = groups.find(group => group.id === nextGroupID);
+		if (!nextGroup) return route.fulfill({ status: 400, body: 'group not found' });
+		if (previousGroup?.id !== nextGroup.id) {
+			previousGroup.feed_count -= 1;
+			nextGroup.feed_count += 1;
+		}
+		feed.title = params.get('title') || feed.title;
+		feed.group_id = nextGroupID;
+		feed.url = params.get('url') || feed.url;
+		feed.display_mode = params.get('display_mode') || feed.display_mode;
+		feed.sort_direction = params.get('sort_direction') || feed.sort_direction;
+		return route.fulfill({ json: { status: 'ok' } });
+	});
+	await page.route('**/api/groups/update', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const group = groups.find(item => item.id === Number(params.get('group_id')));
+		if (!group) return route.fulfill({ status: 404, body: 'group not found' });
+		group.name = params.get('name') || group.name;
+		return route.fulfill({ json: { status: 'ok' } });
+	});
+	await page.route('**/api/groups/delete', route => {
+		const params = new URLSearchParams(route.request().postData() || '');
+		const index = groups.findIndex(group => group.id === Number(params.get('group_id')));
+		if (index < 0) return route.fulfill({ status: 404, body: 'group not found' });
+		if (groups[index].feed_count) return route.fulfill({ status: 409, body: 'move or remove the feeds in this group first' });
+		groups.splice(index, 1);
+		return route.fulfill({ json: { status: 'ok' } });
+	});
 	await page.route('**/api/users', route => {
 		if (route.request().method() === 'GET') return route.fulfill({ json: users });
 		const params = new URLSearchParams(route.request().postData() || '');
@@ -210,7 +243,11 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await page.route('**/api/feeds/delete', route => {
 		const params = new URLSearchParams(route.request().postData() || '');
 		const index = feeds.findIndex(feed => feed.id === Number(params.get('feed_id')));
-		if (index >= 0) feeds.splice(index, 1);
+		if (index >= 0) {
+			const group = groups.find(group => group.id === feeds[index].group_id);
+			if (group) group.feed_count -= 1;
+			feeds.splice(index, 1);
+		}
 		return route.fulfill({ json: { status: 'ok' } });
 	});
 	await page.route('**/api/releases/check', route => route.fulfill({
@@ -608,16 +645,47 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await boardGamesGroup.locator('.feed-item').filter({ hasText: 'Board Game Quest' }).click();
 	await page.getByRole('button', { name: 'Feed settings', exact: true }).click();
 	const removalSettingsDialog = page.getByRole('dialog', { name: 'Feed settings' });
+	await expect(removalSettingsDialog.getByLabel('Feed name')).toHaveValue('Board Game Quest');
+	await expect(removalSettingsDialog.getByLabel('Group', { exact: true })).toHaveValue('2');
+	await removalSettingsDialog.getByLabel('Feed name').fill('Tabletop News');
+	await removalSettingsDialog.getByLabel('Group', { exact: true }).selectOption({ label: 'Programming' });
+	await removalSettingsDialog.getByRole('button', { name: 'Save feed', exact: true }).click();
+	await expect(page.locator('#feed-header')).toHaveText('Tabletop News');
+	await openMobileSubscriptions(page);
+	await expect(boardGamesGroup.locator('.feed-item')).toHaveCount(0);
+	await programmingGroup.locator('.feed-item').filter({ hasText: 'Tabletop News' }).click();
+	await page.getByRole('button', { name: 'Feed settings', exact: true }).click();
 	await removalSettingsDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
 	const removeFeedDialog = page.getByRole('dialog', { name: 'Remove feed?' });
-	await expect(removeFeedDialog).toContainText('Remove Board Game Quest?');
+	await expect(removeFeedDialog).toContainText('Remove Tabletop News?');
 	await removeFeedDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(removalSettingsDialog).toBeVisible();
 	await removalSettingsDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
 	await removeFeedDialog.getByRole('button', { name: 'Remove feed', exact: true }).click();
 	await expect(removeFeedDialog).toBeHidden();
-	await expect(boardGamesGroup.locator('.feed-item').filter({ hasText: 'Board Game Quest' })).toHaveCount(0);
-	await expect(page.locator('#status-message')).toHaveText('Board Game Quest removed.');
+	await expect(programmingGroup.locator('.feed-item').filter({ hasText: 'Tabletop News' })).toHaveCount(0);
+	await expect(page.locator('#status-message')).toHaveText('Tabletop News removed.');
+
+	await openMobileSubscriptions(page);
+	await boardGamesGroup.locator('.group-item').click();
+	await page.getByRole('button', { name: 'Group settings', exact: true }).click();
+	const groupSettingsDialog = page.getByRole('dialog', { name: 'Group settings' });
+	await expect(groupSettingsDialog).toContainText('0 feeds in this group.');
+	await groupSettingsDialog.getByLabel('Group name').fill('Games archive');
+	await groupSettingsDialog.getByRole('button', { name: 'Save group', exact: true }).click();
+	await expect(page.locator('#feed-header')).toHaveText('Games archive');
+	await page.getByRole('button', { name: 'Group settings', exact: true }).click();
+	await groupSettingsDialog.getByRole('button', { name: 'Remove group', exact: true }).click();
+	const removeGroupDialog = page.getByRole('dialog', { name: 'Remove group?' });
+	await expect(removeGroupDialog).toContainText('Remove Games archive?');
+	await removeGroupDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(groupSettingsDialog).toBeVisible();
+	await groupSettingsDialog.getByRole('button', { name: 'Remove group', exact: true }).click();
+	await removeGroupDialog.getByRole('button', { name: 'Remove group', exact: true }).click();
+	await expect(removeGroupDialog).toBeHidden();
+	await openMobileSubscriptions(page);
+	await expect(subscriptions.locator('.subscription-group').filter({ hasText: 'Games archive' })).toHaveCount(0);
+	await expect(page.locator('#status-message')).toHaveText('Games archive removed.');
 });
 
 test('installed app provides a private-data-safe offline shell', async ({ page, context }) => {
