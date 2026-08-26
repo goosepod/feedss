@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-25
+
+### Changed
+
+- Updated Go to 1.27.0, refreshed all direct Go dependencies, and moved the production container to Alpine 3.24.1.
+- Updated Playwright to 1.62.1 for browser-based UI testing.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added
@@ -156,7 +163,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/goosepod/feedss/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/goosepod/feedss/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/goosepod/feedss/compare/v0.9.0...v1.0.0
+[0.9.0]: https://github.com/goosepod/feedss/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/goosepod/feedss/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/goosepod/feedss/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/goosepod/feedss/compare/v0.6.0...v0.6.1
