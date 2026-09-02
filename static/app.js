@@ -3,6 +3,25 @@ const FOREGROUND_SYNC_POLL_INTERVAL_MS = 3_000;
 const BACKGROUND_SYNC_POLL_INTERVAL_MS = 15 * 60_000;
 const DEFAULT_TITLE = 'feedss';
 const STATIC_FAVICON = '/static/favicon.svg';
+const SELECTED_GROUP_STORAGE_KEY = `feedss:selected-group:${document.body.dataset.userId || 'unknown'}`;
+
+function storedGroupID() {
+	try {
+		const groupID = Number(localStorage.getItem(SELECTED_GROUP_STORAGE_KEY));
+		return Number.isSafeInteger(groupID) && groupID > 0 ? groupID : null;
+	} catch {
+		return null;
+	}
+}
+
+function rememberGroup(groupID) {
+	if (!Number.isSafeInteger(groupID) || groupID <= 0) return;
+	try {
+		localStorage.setItem(SELECTED_GROUP_STORAGE_KEY, String(groupID));
+	} catch {
+		// Browser storage may be unavailable; group selection should still work.
+	}
+}
 
 const state = {
   groups: [],
@@ -19,7 +38,7 @@ const state = {
 	subscriptionMetadataLoading: false,
 	syncLoading: false,
 	syncRevision: 0,
-  selectedGroupId: null,
+  selectedGroupId: storedGroupID(),
 	selectedFeedId: null,
   viewMode: 'group',
 	searchQuery: '',
@@ -245,6 +264,7 @@ async function loadGroups() {
   state.groups = Array.isArray(data) ? data : [];
   if (!state.groups.some(group => group.id === state.selectedGroupId)) {
     state.selectedGroupId = state.groups[0]?.id ?? null;
+		if (state.selectedGroupId !== null) rememberGroup(state.selectedGroupId);
   }
 	state.expandedGroupIds = new Set(
 		[...state.expandedGroupIds].filter(id => state.groups.some(group => group.id === id)),
@@ -762,6 +782,7 @@ function updateBrowserUnreadBadge() {
 function selectGroup(groupID) {
 	const group = state.groups.find(item => item.id === groupID);
   state.selectedGroupId = groupID;
+	rememberGroup(groupID);
 	state.selectedFeedId = null;
 	state.viewMode = 'group';
   state.articles = [];
@@ -786,6 +807,7 @@ function selectFeed(feedID) {
   const feed = state.feeds.find(item => item.id === feedID);
   if (feed) {
     state.selectedGroupId = feed.group_id;
+		rememberGroup(feed.group_id);
   }
   state.selectedFeedId = feedID;
 	state.viewMode = 'feed';

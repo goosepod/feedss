@@ -359,6 +359,18 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(programmingGroup.locator('.feed-item')).toHaveCount(0);
 	await groupTitle.click();
 	await expect(page.locator('#feed-header')).toHaveText('Programming');
+	const boardGamesGroup = subscriptions.locator('.subscription-group').filter({ hasText: 'Board games' });
+	await openMobileSubscriptions(page);
+	await boardGamesGroup.locator('.group-item').click();
+	await expect(page.locator('#feed-header')).toHaveText('Board games');
+	await page.reload();
+	await expect(page.locator('#feed-header')).toHaveText('Board games');
+	await page.goto('/logout');
+	await login(page);
+	await expect(page.locator('#feed-header')).toHaveText('Board games');
+	await openMobileSubscriptions(page);
+	await groupTitle.click();
+	await expect(page.locator('#feed-header')).toHaveText('Programming');
 	await openMobileSubscriptions(page);
 	await page.getByRole('button', { name: 'All unread', exact: true }).click();
 	await expect(page.locator('#feed-header')).toHaveText('All unread');
@@ -622,7 +634,6 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(page.locator('#article-pane')).toHaveJSProperty('scrollTop', 0);
 	await expect(page.locator('#mark-all-read-btn')).toBeEnabled();
 
-	const boardGamesGroup = subscriptions.locator('.subscription-group').filter({ hasText: 'Board games' });
 	await openMobileSubscriptions(page);
 	await boardGamesGroup.locator('.group-item').click();
 	await expect(articleRows).toHaveCount(2);

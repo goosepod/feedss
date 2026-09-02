@@ -588,6 +588,7 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	page := struct {
 		Title   string
 		IsAdmin bool
+		UserID  int64
 	}{
 		Title:   "feedss",
 		IsAdmin: false,
@@ -595,6 +596,7 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if session, ok := app.getSession(r); ok {
 		if user, err := app.userByID(session.ID); err == nil {
 			page.IsAdmin = user.IsAdmin
+			page.UserID = user.ID
 		}
 	}
 	if err := app.tmpl.ExecuteTemplate(w, "index.html", page); err != nil {

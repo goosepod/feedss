@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.1.2
+    image: ghcr.io/goosepod/feedss:v1.1.3
     container_name: feedss
     ports:
       - "4317:4317"
@@ -106,7 +106,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.1.2
+  ghcr.io/goosepod/feedss:v1.1.3
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
