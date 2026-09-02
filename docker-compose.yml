@@ -9,4 +9,10 @@ services:
       APP_PORT: 4317
     volumes:
       - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${APP_PORT}/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
     restart: unless-stopped

@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.1.0
+    image: ghcr.io/goosepod/feedss:v1.1.2
     container_name: feedss
     ports:
       - "4317:4317"
@@ -80,11 +80,22 @@ services:
       APP_PORT: 4317
     volumes:
       - feedss-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${APP_PORT}/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:
   feedss-data:
 ```
+
+The published image includes this health check by default, so Compose reports the container as
+`healthy` once the login page responds. Add the `healthcheck` block above when you want to make
+the settings explicit or override the image defaults. The doubled dollar sign (`$$`) tells Compose
+to expand `APP_PORT` inside the container rather than while reading the Compose file.
 
 ## Run the Published Docker Image
 
@@ -95,7 +106,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.1.0
+  ghcr.io/goosepod/feedss:v1.1.2
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.

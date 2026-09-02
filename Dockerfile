@@ -15,4 +15,6 @@ COPY --from=builder /out/feedss /app/feedss
 ENV APP_ENV=production
 ENV APP_PORT=4317
 EXPOSE 4317
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -q --spider "http://127.0.0.1:${APP_PORT}/login" || exit 1
 CMD ["/app/feedss"]
