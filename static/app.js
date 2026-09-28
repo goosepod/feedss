@@ -1533,8 +1533,7 @@ async function retryFeed(feed, button) {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: new URLSearchParams({ feed_id: feed.id }),
 		});
-		await loadGroups();
-		await loadFeeds();
+		await refreshSubscriptionMetadata();
 		renderProblemFeeds();
 		if (result.failed) setStatus(`${feed.title || 'Feed'} still could not be updated.`, 'error');
 		else setStatus(`${feed.title || 'Feed'} updated successfully.`);

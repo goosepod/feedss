@@ -405,10 +405,29 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await feedSettingsDialogFromProblem.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await openMobileActions(page);
 	await problemFeedsButton.click();
+	while (await page.evaluate(() => state.hasMoreArticles)) {
+		await page.waitForFunction(() => !state.articlesLoading);
+		await page.evaluate(() => loadMoreArticles());
+	}
+	await page.locator('[data-article-id="105"]').evaluate(article => article.scrollIntoView({ block: 'start' }));
+	const readingProgressBeforeRetry = await page.evaluate(() => ({
+		articleIDs: state.articles.map(article => article.id),
+		articleOffset: state.articleOffset,
+		scrollTop: document.querySelector('#article-pane').scrollTop,
+	}));
+	expect(readingProgressBeforeRetry.articleIDs.length).toBeGreaterThan(100);
+	expect(readingProgressBeforeRetry.scrollTop).toBeGreaterThan(0);
 	await problemFeedsDialog.getByRole('button', { name: 'Retry', exact: true }).click();
 	await expect(problemFeedsDialog).toContainText('No feeds currently have update problems.');
 	await expect(problemFeedsButton).toBeHidden();
+	expect(await page.evaluate(() => ({
+		articleIDs: state.articles.map(article => article.id),
+		articleOffset: state.articleOffset,
+		scrollTop: document.querySelector('#article-pane').scrollTop,
+	}))).toEqual(readingProgressBeforeRetry);
 	await problemFeedsDialog.getByRole('button', { name: 'Close', exact: true }).click();
+	await openMobileSubscriptions(page);
+	await groupTitle.click();
 
   const layout = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,

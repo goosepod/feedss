@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-09-28
+
+### Fixed
+
+- Retrying a problem feed now updates subscription status without resetting the current article list or reading position.
+
 ## [1.1.3] - 2026-09-02
 
 ### Added
@@ -175,7 +181,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/goosepod/feedss/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/goosepod/feedss/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/goosepod/feedss/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/goosepod/feedss/compare/v1.1.0...v1.1.1
