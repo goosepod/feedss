@@ -23,7 +23,7 @@ read, and a backgrounded client reconciles as soon as it returns to the foregrou
 SQLite maintains the per-user revision counters, so synchronization also works when
 multiple feedss processes share the same database.
 
-Sessions use opaque random browser tokens. Only token hashes and expirations are stored in SQLite, and logging out revokes the active session.
+Sessions use opaque random browser tokens and expire after seven days of inactivity. Each authenticated request renews the session for another seven days. Only token hashes and expirations are stored in SQLite, and logging out revokes the active session.
 
 ## Run From Source
 
@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.1.3
+    image: ghcr.io/goosepod/feedss:v1.1.5
     container_name: feedss
     ports:
       - "4317:4317"
@@ -106,7 +106,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.1.3
+  ghcr.io/goosepod/feedss:v1.1.5
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.

@@ -75,6 +75,114 @@ func TestSessionsUseOpaqueRevocableTokens(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedRequestsRenewSession(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/", "/api/articles"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			addSessionCookie(t, app, request, user)
+			cookie, _ := request.Cookie("feedss_user")
+			tokenHash := sessionTokenHash(cookie.Value)
+			oldExpiry := time.Now().UTC().Add(time.Hour)
+			if _, err := app.db.Exec("UPDATE sessions SET expires_at = ? WHERE token_hash = ?", oldExpiry.Format(time.RFC3339Nano), tokenHash); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			handler := app.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			response := httptest.NewRecorder()
+			before := time.Now().UTC()
+			handler.ServeHTTP(response, request)
+			after := time.Now().UTC()
+			if !called || response.Code != http.StatusNoContent {
+				t.Fatalf("authenticated handler was not reached: status=%d", response.Code)
+			}
+			var storedExpiry string
+			if err := app.db.QueryRow("SELECT expires_at FROM sessions WHERE token_hash = ?", tokenHash).Scan(&storedExpiry); err != nil {
+				t.Fatal(err)
+			}
+			expiresAt, err := time.Parse(time.RFC3339Nano, storedExpiry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if expiresAt.Before(before.Add(sessionLifetime)) || expiresAt.After(after.Add(sessionLifetime)) {
+				t.Fatalf("session expiry was not renewed for seven days: %v", expiresAt)
+			}
+			cookies := response.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatalf("expected renewed cookie, got %d", len(cookies))
+			}
+			renewed := cookies[0]
+			if renewed.Name != cookie.Name || renewed.Value != cookie.Value || renewed.MaxAge != int(sessionLifetime.Seconds()) || !renewed.Expires.Equal(expiresAt.Truncate(time.Second)) {
+				t.Fatalf("cookie does not match renewed session: %#v", renewed)
+			}
+			if !renewed.HttpOnly || renewed.SameSite != http.SameSiteLaxMode || renewed.Path != "/" {
+				t.Fatalf("renewed cookie lost its attributes: %#v", renewed)
+			}
+		})
+	}
+}
+
+func TestInvalidSessionsAreNotRenewed(t *testing.T) {
+	app, err := NewApp(AppConfig{DBPath: filepath.Join(t.TempDir(), "feedss_test.db"), Port: defaultPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	user, err := app.createUser("reader", "pw123", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"expired", "revoked", "missing", "forged"} {
+		t.Run(state, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			expiredAt := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+			var tokenHash string
+			if state == "expired" || state == "revoked" {
+				addSessionCookie(t, app, request, user)
+				cookie, _ := request.Cookie("feedss_user")
+				tokenHash = sessionTokenHash(cookie.Value)
+				if state == "expired" {
+					if _, err := app.db.Exec("UPDATE sessions SET expires_at = ? WHERE token_hash = ?", expiredAt, tokenHash); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					app.clearSession(httptest.NewRecorder(), request)
+				}
+			} else if state == "forged" {
+				request.AddCookie(&http.Cookie{Name: "feedss_user", Value: "forged-token"})
+			}
+			response := httptest.NewRecorder()
+			app.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("invalid session reached authenticated handler")
+			})).ServeHTTP(response, request)
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login" || len(response.Result().Cookies()) != 0 {
+				t.Fatalf("invalid session was not rejected without renewal: %#v", response.Result())
+			}
+			if state == "expired" {
+				var storedExpiry string
+				if err := app.db.QueryRow("SELECT expires_at FROM sessions WHERE token_hash = ?", tokenHash).Scan(&storedExpiry); err != nil {
+					t.Fatal(err)
+				}
+				if storedExpiry != expiredAt {
+					t.Fatal("expired session was renewed")
+				}
+			}
+		})
+	}
+}
+
 func TestFetchFeedUsesHTTPValidators(t *testing.T) {
 	const etag = `"feed-v1"`
 	const modified = "Wed, 19 Aug 2026 12:00:00 GMT"

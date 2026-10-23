@@ -903,6 +903,10 @@ func (app *App) requireAuth(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		if err := app.refreshSession(w, r); err != nil {
+			http.Error(w, "failed to refresh session", http.StatusInternalServerError)
+			return
+		}
 		if user.MustChangePassword && r.URL.Path != "/change-password" {
 			http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 			return
@@ -932,6 +936,11 @@ func (app *App) setSession(w http.ResponseWriter, user *User) error {
 		return err
 	}
 	_, _ = app.db.Exec("DELETE FROM sessions WHERE expires_at <= ?", time.Now().UTC().Format(time.RFC3339Nano))
+	setSessionCookie(w, token, expiresAt)
+	return nil
+}
+
+func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
 	cookie := &http.Cookie{
 		Name:     "feedss_user",
 		Value:    token,
@@ -942,6 +951,30 @@ func (app *App) setSession(w http.ResponseWriter, user *User) error {
 		Expires:  expiresAt,
 	}
 	http.SetCookie(w, cookie)
+}
+
+func (app *App) refreshSession(w http.ResponseWriter, r *http.Request) error {
+	cookie, err := r.Cookie("feedss_user")
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(sessionLifetime)
+	result, err := app.db.Exec(
+		"UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND expires_at > ?",
+		expiresAt.Format(time.RFC3339Nano), sessionTokenHash(cookie.Value), now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return errors.New("session expired or revoked")
+	}
+	setSessionCookie(w, cookie.Value, expiresAt)
 	return nil
 }
 

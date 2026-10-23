@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-23
+
+### Changed
+
+- Logged-in sessions now renew for seven days on each authenticated request, keeping active users signed in until seven days of inactivity.
+
 ## [1.1.4] - 2026-09-28
 
 ### Fixed
