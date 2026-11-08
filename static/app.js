@@ -70,6 +70,8 @@ if ('serviceWorker' in navigator) {
 
 const elements = {};
 let syncPollTimer = null;
+let statusTimer = null;
+const STATUS_DURATION_MS = 6_000;
 
 function mobileMenuIsAvailable() {
 	return window.matchMedia('(max-width: 760px)').matches;
@@ -129,9 +131,17 @@ function closeAddFeed() {
 }
 
 function setStatus(message = '', type = 'info') {
+  clearTimeout(statusTimer);
   elements.statusMessage.textContent = message;
   elements.status.className = `status${type === 'error' ? ' error' : ''}`;
   elements.status.hidden = !message;
+  if (message) scheduleStatusDismissal();
+}
+
+function scheduleStatusDismissal() {
+  clearTimeout(statusTimer);
+  if (elements.status.hidden || elements.status.matches(':hover, :focus-within')) return;
+  statusTimer = setTimeout(() => setStatus(), STATUS_DURATION_MS);
 }
 
 function setFormError(element, message = '') {
@@ -1859,6 +1869,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 		if (!mobileMenuIsAvailable()) closeMobileMenus();
 	});
   document.getElementById('dismiss-status-btn').addEventListener('click', () => setStatus());
+  elements.status.addEventListener('mouseenter', () => clearTimeout(statusTimer));
+  elements.status.addEventListener('mouseleave', scheduleStatusDismissal);
+  elements.status.addEventListener('focusin', () => clearTimeout(statusTimer));
+  elements.status.addEventListener('focusout', () => queueMicrotask(scheduleStatusDismissal));
   document.getElementById('add-feed-btn').addEventListener('click', openAddFeed);
 	document.getElementById('account-btn').addEventListener('click', openAccount);
 	document.getElementById('cancel-account-btn').addEventListener('click', () => elements.accountModal.close());

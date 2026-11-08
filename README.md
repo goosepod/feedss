@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.1.5
+    image: ghcr.io/goosepod/feedss:v1.1.6
     container_name: feedss
     ports:
       - "4317:4317"
@@ -106,7 +106,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.1.5
+  ghcr.io/goosepod/feedss:v1.1.6
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -162,6 +162,8 @@ subscriptions, article content, sessions, and application settings.
 ## Problem Feeds
 
 When a feed update fails, feedss stores the latest error and attempt time. A **Problem feeds** button appears only while one or more feeds are failing. From there, you can retry an update, edit the feed URL and display settings, or remove a feed that has gone away. A successful update clears the warning automatically.
+
+General status and error messages appear as compact notifications without shifting the reader. They disappear after six seconds or can be dismissed with the close button. Hovering or focusing a notification keeps it visible; form errors stay beside their fields.
 
 Feed updates use HTTP `ETag` and `Last-Modified` validators when servers provide them, avoiding unnecessary downloads and parsing. Automatic and manual batch updates use a bounded worker pool.
 

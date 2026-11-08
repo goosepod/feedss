@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20260824-14">
+  <link rel="stylesheet" href="/static/styles.css?v=20261108-1">
 </head>
 <body data-user-id="{{.UserID}}">
   <div class="app-shell">
@@ -35,7 +35,7 @@
       </nav>
     </header>
 
-    <div id="status" class="status" role="status" aria-live="polite" hidden>
+    <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true" hidden>
       <span id="status-message"></span>
       <button id="dismiss-status-btn" class="status-dismiss" type="button" aria-label="Dismiss notification">&times;</button>
     </div>
@@ -345,6 +345,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20260902-1"></script>
+  <script src="/static/app.js?v=20261108-1"></script>
 </body>
 </html>

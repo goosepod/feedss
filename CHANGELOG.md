@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-11-08
+
+### Changed
+
+- General status and error messages now appear as dismissible notifications that disappear after six seconds without shifting page content. Hovering or focusing a notification keeps it visible.
+
 ## [1.1.5] - 2026-10-23
 
 ### Changed

@@ -70,6 +70,60 @@ async function expectSelectedArticleToKeepTopPadding(page) {
 	expect(Number(mask.zIndex)).toBeGreaterThan(0);
 }
 
+test('request errors appear without shifting content and can be dismissed', async ({ page }) => {
+	await login(page);
+	await page.route('**/api/articles?**', route => route.fulfill({ status: 503, body: 'Temporarily unavailable' }));
+	const content = page.locator('.app-content');
+	const before = await content.boundingBox();
+	await openMobileSubscriptions(page);
+	await page.locator('#unread-view-btn').click();
+	const notification = page.locator('#status');
+	await expect(notification).toBeVisible();
+	await expect(notification).toContainText('Temporarily unavailable');
+	await expect(notification).toHaveCSS('position', 'fixed');
+	expect(await content.boundingBox()).toEqual(before);
+	const bounds = await notification.boundingBox();
+	expect(bounds.x).toBeGreaterThanOrEqual(0);
+	expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize().width);
+	await page.getByRole('button', { name: 'Dismiss notification' }).click();
+	await expect(notification).toBeHidden();
+	expect(await content.boundingBox()).toEqual(before);
+});
+
+test('notifications expire, reset for new messages, and pause during interaction', async ({ page }) => {
+	await login(page);
+	await page.clock.install();
+	await page.clock.pauseAt(new Date());
+	const notification = page.locator('#status');
+	await page.evaluate(() => setStatus('First notification'));
+	await page.clock.runFor(4_000);
+	await page.evaluate(() => setStatus('Latest notification', 'error'));
+	await page.clock.runFor(2_000);
+	await expect(notification).toBeVisible();
+	await expect(notification).toContainText('Latest notification');
+	await page.clock.runFor(4_000);
+	await expect(notification).toBeHidden();
+
+	await page.evaluate(() => setStatus('Keep visible while focused'));
+	await page.getByRole('button', { name: 'Dismiss notification' }).focus();
+	await page.clock.runFor(10_000);
+	await expect(notification).toBeVisible();
+	await page.locator('.brand').focus();
+	await page.clock.runFor(6_000);
+	await expect(notification).toBeHidden();
+
+	// Touch screens have no persistent hover interaction.
+	if (!test.info().project.use.isMobile) {
+		await page.evaluate(() => setStatus('Keep visible while hovered'));
+		await notification.hover();
+		await page.clock.runFor(10_000);
+		await expect(notification).toBeVisible();
+		await page.mouse.move(0, 0);
+		await page.clock.runFor(6_000);
+		await expect(notification).toBeHidden();
+	}
+});
+
 test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const users = [{ id: 1, username: 'admin', is_admin: true, must_change_password: false }];
 	const groups = [
