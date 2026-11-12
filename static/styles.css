@@ -466,6 +466,7 @@ body.search-open .mobile-menu-backdrop {
 .text-button:hover { background: transparent; text-decoration: underline; }
 
 .article-body {
+	position: relative;
   color: #26313c;
   font-size: 1rem;
   line-height: 1.65;
@@ -474,6 +475,9 @@ body.search-open .mobile-menu-backdrop {
 
 .article-body > :first-child { margin-top: 0; }
 .article-body img, .article-body video, .article > video { max-width: 100%; height: auto; margin: 18px 0; }
+/* Keep failed page-image lookups from moving the article being read. A tiny
+   positioned box still lets native lazy loading request nearby previews. */
+.article-body img.article-image-pending { position: absolute; top: 0; left: 0; width: 1px; height: 1px; margin: 0; opacity: 0; }
 .article-body pre { max-width: 100%; padding: 14px; border: 1px solid var(--border); background: var(--surface); overflow-x: auto; }
 .article-body blockquote { margin-left: 0; padding-left: 18px; border-left: 3px solid var(--border); color: #3f4b57; }
 

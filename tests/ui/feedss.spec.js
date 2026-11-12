@@ -850,3 +850,43 @@ test('temporary users must choose a permanent password', async ({ page }, testIn
 	]);
 	await expect(page.locator('#feed-header')).toBeVisible();
 });
+
+test('article previews preserve full-content images and recover failed requests', async ({ page }) => {
+	await login(page);
+	const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+	let attempts = 0;
+	await page.route('**/api/image?**', route => {
+		attempts++;
+		return route.fulfill(attempts === 1
+			? { status: 502, body: 'image unavailable' }
+			: { status: 200, contentType: 'image/png', body: imageBytes });
+	});
+	await page.route('**/api/article-image?**', route => route.fulfill({ status: 200, contentType: 'image/png', body: imageBytes }));
+	const preview = await page.evaluate(() => {
+		state.defaultDisplayMode = 'summary';
+		state.viewMode = 'group';
+		const article = { id: 345, title: 'Comic', link: 'https://www.semicoop.com/comic/youth/',
+			description: '<p>Short summary</p>', content: '<p>Long full article</p><img data-src="/strip.jpg" src="/placeholder.gif" onerror="alert(1)"><img class="emoji" src="/wink.png">', is_read: true };
+		const content = createArticleContent(article);
+		content.id = 'comic-test';
+		document.body.appendChild(content);
+		return { text: content.textContent, src: content.querySelector('img').getAttribute('src'), onerror: content.querySelector('img').getAttribute('onerror') };
+	});
+	expect(preview.text).toContain('Short summary');
+	expect(preview.text).not.toContain('Long full article');
+	expect(preview.src).toBe('/api/image?url=https%3A%2F%2Fwww.semicoop.com%2Fstrip.jpg');
+	expect(preview.onerror).toBeNull();
+	await expect(page.locator('#comic-test img')).toHaveCount(1);
+	await page.locator('#comic-test img').evaluate(image => { image.loading = 'eager'; });
+	await expect.poll(() => page.locator('#comic-test img').evaluate(image => image.naturalWidth)).toBe(1);
+	expect(attempts).toBe(2);
+
+	await page.evaluate(() => {
+		const content = createArticleContent({ id: 346, title: 'CAD', link: 'https://example.org/news/article/', description: '<p>Article summary</p>', is_read: true });
+		content.id = 'fallback-test'; document.body.appendChild(content);
+		content.querySelector('img').loading = 'eager';
+	});
+	await expect(page.locator('#fallback-test img')).toHaveAttribute('src', '/api/article-image?id=346');
+	await expect.poll(() => page.locator('#fallback-test img').evaluate(image => image.naturalWidth)).toBe(1);
+	expect(await page.evaluate(() => articleImageFallbackURL({ id: 347, link: 'javascript:alert(1)' }))).toBe('');
+});

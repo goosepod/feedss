@@ -71,7 +71,7 @@ To run the published image from your own compose file:
 ```yaml
 services:
   feedss:
-    image: ghcr.io/goosepod/feedss:v1.1.6
+    image: ghcr.io/goosepod/feedss:v1.1.7
     container_name: feedss
     ports:
       - "4317:4317"
@@ -106,7 +106,7 @@ docker run --rm \
   -p 4317:4317 \
   -e APP_DB_PATH=/data/feedss.db \
   -v feedss-data:/data \
-  ghcr.io/goosepod/feedss:v1.1.6
+  ghcr.io/goosepod/feedss:v1.1.7
 ```
 
 Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
@@ -128,6 +128,11 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 The Add feed form accepts either a direct RSS/Atom URL or an ordinary website URL.
 When a website advertises one feed, feedss uses it automatically. When it advertises
 multiple feeds, choose the one you want before adding the subscription.
+
+Article previews include images from full feed content even when the summary omits
+them. When a feed entry has no image, feedss can retrieve the lead image from the
+original page using its image metadata or article content. Images pass through the
+existing image proxy; a failed image request is retried once.
 
 ## Organizing Subscriptions
 

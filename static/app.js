@@ -825,18 +825,18 @@ function selectFeed(feedID) {
   loadArticles(feedID, { hideRead: sourceHasUnread(feed) });
 }
 
-function safeExternalURL(rawURL) {
+function safeExternalURL(rawURL, baseURL = window.location.origin) {
   if (!rawURL) return '';
   try {
-    const parsed = new URL(rawURL, window.location.origin);
+    const parsed = new URL(rawURL, baseURL);
     return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
   } catch {
     return '';
   }
 }
 
-function proxiedImageURL(rawURL) {
-	const url = safeExternalURL(rawURL);
+function proxiedImageURL(rawURL, baseURL) {
+	const url = safeExternalURL(rawURL, baseURL);
 	return url ? `/api/image?url=${encodeURIComponent(url)}` : '';
 }
 
@@ -864,9 +864,13 @@ function createSiteIcon(article) {
 	return icon;
 }
 
-function sanitizeHTML(rawHTML) {
+function sanitizeHTML(rawHTML, baseURL) {
   const parsed = new DOMParser().parseFromString(rawHTML || '', 'text/html');
   parsed.querySelectorAll('script, style, iframe, object, embed, form, input, button, picture source').forEach(node => node.remove());
+  parsed.querySelectorAll('img').forEach(image => {
+    const lazySource = image.getAttribute('data-src') || image.getAttribute('data-original');
+    if (lazySource) image.setAttribute('src', lazySource);
+  });
   parsed.body.querySelectorAll('*').forEach(node => {
     for (const attribute of [...node.attributes]) {
       const name = attribute.name.toLowerCase();
@@ -874,8 +878,8 @@ function sanitizeHTML(rawHTML) {
 			if (name === 'srcset') node.removeAttribute(attribute.name);
       if (['href', 'src', 'poster'].includes(name)) {
 				const safeURL = (node.tagName === 'IMG' && name === 'src') || name === 'poster'
-					? proxiedImageURL(attribute.value)
-					: safeExternalURL(attribute.value);
+					? proxiedImageURL(attribute.value, baseURL)
+					: safeExternalURL(attribute.value, baseURL);
         if (safeURL) node.setAttribute(attribute.name, safeURL);
         else node.removeAttribute(attribute.name);
       }
@@ -918,6 +922,16 @@ function removeDuplicateCommentsLink(body, commentsLink) {
 	});
 }
 
+function articleImageFallbackURL(article) {
+	try {
+		const url = new URL(article.link);
+		if (['http:', 'https:'].includes(url.protocol) && article.id) {
+			return `/api/article-image?id=${encodeURIComponent(article.id)}`;
+		}
+	} catch { /* Invalid article links have no page fallback. */ }
+	return '';
+}
+
 function createArticleContent(article) {
 	const content = document.createElement('div');
 	content.className = 'article-content';
@@ -941,7 +955,44 @@ function createArticleContent(article) {
 	body.className = 'article-body';
 	const articleSource = getCurrentDisplayMode() === 'full'
 		? (article.content || article.description) : (article.description || article.content);
-	body.innerHTML = sanitizeHTML(articleSource) || '<p>No preview is available.</p>';
+	body.innerHTML = sanitizeHTML(articleSource, article.link) || '<p>No preview is available.</p>';
+	// Summary feeds can carry images only in content:encoded. Keep the
+	// summary text while adding its full-content images to the preview.
+	if (!body.querySelector('img') && article.content && article.content !== articleSource) {
+		const full = document.createElement('div');
+		full.innerHTML = sanitizeHTML(article.content, article.link);
+		body.prepend(...full.querySelectorAll('img:not(.emoji):not(.wp-smiley)'));
+	}
+	const imageFallback = articleImageFallbackURL(article);
+	if (!body.querySelector('img') && imageFallback) {
+		const image = document.createElement('img');
+		image.className = 'article-image-pending';
+		image.addEventListener('load', () => {
+			image.classList.remove('article-image-pending');
+			body.prepend(image);
+		}, { once: true });
+		image.src = imageFallback;
+		image.alt = article.title;
+		image.loading = 'lazy';
+		body.appendChild(image);
+	}
+	body.querySelectorAll('img').forEach(image => {
+		// Retry a transient proxy failure once. A broken feed image can then
+		// fall back to the lead image on its original page.
+		let retried = false;
+		image.addEventListener('error', () => {
+			if (!retried) {
+				retried = true;
+				const retry = new URL(image.src);
+				retry.searchParams.set('retry', Date.now());
+				image.src = retry.href;
+			} else if (imageFallback && new URL(image.src).pathname !== '/api/article-image') {
+				image.src = imageFallback;
+			} else {
+				image.remove();
+			}
+		});
+	});
 	removeDuplicateCommentsLink(body, article.comments_link);
 	if (body.textContent.trim() || body.querySelector('img, video, audio')) content.appendChild(body);
 

@@ -261,6 +261,7 @@ func main() {
 	mux.HandleFunc("/api/sync", app.handleSyncAPI)
 	mux.HandleFunc("/api/search", app.handleSearchAPI)
 	mux.HandleFunc("/api/image", app.handleImageProxy)
+	mux.HandleFunc("/api/article-image", app.handleArticleImage)
 	mux.HandleFunc("/api/favicon", app.handleFaviconProxy)
 	mux.HandleFunc("/api/refresh", app.handleRefreshAPI)
 	mux.HandleFunc("/api/settings", app.handleSettingsAPI)
@@ -325,7 +326,13 @@ func getenv(key, fallback string) string {
 }
 
 func NewApp(cfg AppConfig) (*App, error) {
-	db, err := sql.Open("sqlite", cfg.DBPath)
+	// database/sql opens additional connections as images load concurrently.
+	// Connection-local PRAGMAs must be set in the DSN for every connection.
+	separator := "?"
+	if strings.Contains(cfg.DBPath, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite", cfg.DBPath+separator+"_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
@@ -2364,7 +2371,9 @@ func fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, string, error
 	}
 	request.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8")
 	request.Header.Set("User-Agent", "feedss/1.0")
-	response, err := imageProxyClient().Do(request)
+	client := imageProxyClient()
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		log.Printf("image proxy %s: %v", remoteURL.Hostname(), err)
 		return nil, "", err

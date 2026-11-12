@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-11-12
+
+### Fixed
+
+- Article previews now include images available only in full feed content while retaining summary text.
+- Entries that omit images can display the lead image from the original page. Expiring image links are resolved when the image is requested.
+- Fixed intermittent image failures when several articles load at once.
+- Article images resolve relative and lazy-loaded sources correctly and retry transient loading failures once.
+
 ## [1.1.6] - 2026-11-08
 
 ### Changed
@@ -193,7 +202,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.7...HEAD
+[1.1.7]: https://github.com/goosepod/feedss/compare/v1.1.6...v1.1.7
+[1.1.6]: https://github.com/goosepod/feedss/compare/v1.1.5...v1.1.6
+[1.1.5]: https://github.com/goosepod/feedss/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/goosepod/feedss/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/goosepod/feedss/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/goosepod/feedss/compare/v1.1.1...v1.1.2
