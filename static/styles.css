@@ -475,6 +475,7 @@ body.search-open .mobile-menu-backdrop {
 
 .article-body > :first-child { margin-top: 0; }
 .article-body img, .article-body video, .article > video { max-width: 100%; height: auto; margin: 18px 0; }
+.article-body img { width: auto; max-width: min(100%, 500px); max-height: 340px; object-fit: contain; }
 /* Keep failed page-image lookups from moving the article being read. A tiny
    positioned box still lets native lazy loading request nearby previews. */
 .article-body img.article-image-pending { position: absolute; top: 0; left: 0; width: 1px; height: 1px; margin: 0; opacity: 0; }
@@ -618,6 +619,7 @@ input, select, textarea {
 .login-submit { width: 100%; min-height: 44px; margin-top: 2px; }
 
 @media (max-width: 760px) {
+	.article-body img { max-height: 224px; }
 	body.mobile-nav-open, body.mobile-actions-open, body.search-open { overflow: hidden; }
 	.app-header {
 		position: relative;

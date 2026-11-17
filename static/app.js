@@ -953,17 +953,19 @@ function createArticleContent(article) {
 
 	const body = document.createElement('div');
 	body.className = 'article-body';
-	const articleSource = getCurrentDisplayMode() === 'full'
+	const displayMode = getCurrentDisplayMode();
+	const includePreviewImages = displayMode !== 'headline';
+	const articleSource = displayMode === 'full'
 		? (article.content || article.description) : (article.description || article.content);
 	body.innerHTML = sanitizeHTML(articleSource, article.link) || '<p>No preview is available.</p>';
 	// Summary feeds can carry images only in content:encoded. Keep the
 	// summary text while adding its full-content images to the preview.
-	if (!body.querySelector('img') && article.content && article.content !== articleSource) {
+	if (includePreviewImages && !body.querySelector('img') && article.content && article.content !== articleSource) {
 		const full = document.createElement('div');
 		full.innerHTML = sanitizeHTML(article.content, article.link);
 		body.prepend(...full.querySelectorAll('img:not(.emoji):not(.wp-smiley)'));
 	}
-	const imageFallback = articleImageFallbackURL(article);
+	const imageFallback = includePreviewImages ? articleImageFallbackURL(article) : '';
 	if (!body.querySelector('img') && imageFallback) {
 		const image = document.createElement('img');
 		image.className = 'article-image-pending';

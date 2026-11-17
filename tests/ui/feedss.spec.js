@@ -851,6 +851,77 @@ test('temporary users must choose a permanent password', async ({ page }, testIn
 	await expect(page.locator('#feed-header')).toBeVisible();
 });
 
+test('article images stay within reading limits without stretching or cropping', async ({ page }, testInfo) => {
+	await login(page);
+	await page.route('**/api/image?**', route => {
+		const portrait = route.request().url().includes('portrait');
+		return route.fulfill({ contentType: 'image/svg+xml', body:
+			`<svg xmlns="http://www.w3.org/2000/svg" width="${portrait ? 1200 : 2400}" height="${portrait ? 2400 : 600}"><rect width="100%" height="100%" fill="teal"/></svg>` });
+	});
+	await page.evaluate(() => {
+		state.viewMode = 'group';
+		state.defaultDisplayMode = 'full';
+		state.groups = [{ id: 1, name: 'Image sizing' }];
+		state.selectedGroupId = 1;
+		state.hasMoreArticles = false;
+		state.articles = [{ id: 345, title: 'Large images', link: 'https://example.org/article', is_read: true,
+			content: '<img src="https://example.org/wide.svg" width="2400" height="600"><img src="https://example.org/portrait.svg" width="1200" height="2400">' }];
+		state.expandedArticleIds = new Set([345]);
+		renderArticles();
+		document.querySelectorAll('.article-body img').forEach(image => { image.loading = 'eager'; });
+	});
+	const images = page.locator('.article-body img');
+	for (let index = 0; index < 2; index++) {
+		const image = images.nth(index);
+		await expect.poll(() => image.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
+		const bounds = await image.boundingBox();
+		const body = await page.locator('.article-body').boundingBox();
+		expect(bounds.width).toBeLessThanOrEqual(Math.min(500, body.width));
+		expect(bounds.height).toBeLessThanOrEqual(testInfo.project.name === 'mobile' ? 224 : 340);
+		expect(bounds.width / bounds.height).toBeCloseTo(index === 0 ? 4 : 0.5, 1);
+	}
+	await page.screenshot({ path: testInfo.outputPath('article-image-limits.png') });
+});
+
+test('headline selection does not add full-content or original-page preview images', async ({ page }) => {
+	await login(page);
+	const imageRequests = [];
+	await page.route(/\/api\/(image|article-image)\?/, route => {
+		imageRequests.push(route.request().url());
+		return route.fulfill({ status: 404, body: 'No image' });
+	});
+	for (const viewMode of ['feed', 'group']) {
+		await page.evaluate(viewMode => {
+			state.viewMode = viewMode;
+			state.defaultDisplayMode = 'headline';
+			state.feeds = [{ id: 11, title: 'Headline feed', display_mode: 'headline' }];
+			state.groups = [{ id: 1, name: 'Headline group' }];
+			state.selectedFeedId = 11;
+			state.selectedGroupId = 1;
+			state.hasMoreArticles = false;
+			state.articles = [
+				{ id: 345, feed_id: 11, title: 'Content image', link: 'https://example.org/345',
+					description: '<p>Short summary</p>', content: '<p>Full article</p><img src="https://example.org/full.png">', is_read: true },
+				{ id: 346, feed_id: 11, title: 'Page image', link: 'https://example.org/346',
+					description: '<p>Another summary</p>', is_read: true },
+			];
+			state.expandedArticleIds = new Set();
+			state.selectedArticleIndex = -1;
+			renderArticles();
+		}, viewMode);
+		await expect(page.locator('.article-content')).toHaveCount(0);
+		await page.keyboard.press('j');
+		await expect(page.locator('.article.selected .article-body')).toHaveText('Short summary');
+		await page.locator('.article-header').nth(1).click({ position: { x: 4, y: 4 } });
+		await expect(page.locator('.article.selected .article-body')).toHaveText('Another summary');
+		await expect(page.locator('.article-body img')).toHaveCount(0);
+		// Re-rendering a selected headline must also keep the preview text-only.
+		await page.evaluate(() => renderArticles());
+		await expect(page.locator('.article-body img')).toHaveCount(0);
+	}
+	expect(imageRequests).toEqual([]);
+});
+
 test('article previews preserve full-content images and recover failed requests', async ({ page }) => {
 	await login(page);
 	const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -863,7 +934,7 @@ test('article previews preserve full-content images and recover failed requests'
 	});
 	await page.route('**/api/article-image?**', route => route.fulfill({ status: 200, contentType: 'image/png', body: imageBytes }));
 	const preview = await page.evaluate(() => {
-		state.defaultDisplayMode = 'summary';
+		state.defaultDisplayMode = 'headline-blurb';
 		state.viewMode = 'group';
 		const article = { id: 345, title: 'Comic', link: 'https://www.semicoop.com/comic/youth/',
 			description: '<p>Short summary</p>', content: '<p>Long full article</p><img data-src="/strip.jpg" src="/placeholder.gif" onerror="alert(1)"><img class="emoji" src="/wink.png">', is_read: true };

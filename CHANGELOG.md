@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-11-17
+
+### Fixed
+
+- Selecting an article in Headline mode no longer adds preview images from full feed content or the original page.
+- Article images fit within 500 pixels wide and 340 pixels tall (224 pixels tall on mobile), preserving their proportions.
+
 ## [1.1.7] - 2026-11-12
 
 ### Fixed
@@ -202,7 +209,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.7...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.8...HEAD
+[1.1.8]: https://github.com/goosepod/feedss/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/goosepod/feedss/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/goosepod/feedss/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/goosepod/feedss/compare/v1.1.4...v1.1.5
