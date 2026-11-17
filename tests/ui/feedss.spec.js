@@ -853,6 +853,7 @@ test('temporary users must choose a permanent password', async ({ page }, testIn
 
 test('article images stay within reading limits without stretching or cropping', async ({ page }, testInfo) => {
 	await login(page);
+	await page.waitForFunction(() => syncPollTimer !== null);
 	await page.route('**/api/image?**', route => {
 		const portrait = route.request().url().includes('portrait');
 		return route.fulfill({ contentType: 'image/svg+xml', body:
@@ -885,6 +886,7 @@ test('article images stay within reading limits without stretching or cropping',
 
 test('headline selection does not add full-content or original-page preview images', async ({ page }) => {
 	await login(page);
+	await page.waitForFunction(() => syncPollTimer !== null);
 	const imageRequests = [];
 	await page.route(/\/api\/(image|article-image)\?/, route => {
 		imageRequests.push(route.request().url());
@@ -924,6 +926,7 @@ test('headline selection does not add full-content or original-page preview imag
 
 test('article previews preserve full-content images and recover failed requests', async ({ page }) => {
 	await login(page);
+	await page.waitForFunction(() => syncPollTimer !== null);
 	const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 	let attempts = 0;
 	await page.route('**/api/image?**', route => {
