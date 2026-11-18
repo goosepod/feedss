@@ -174,6 +174,8 @@ type AppSettings struct {
 	MaxArticlesPerFeed             int    `json:"max_articles_per_feed"`
 	DefaultDisplayMode             string `json:"default_display_mode"`
 	DefaultSortOrder               string `json:"default_sort_order"`
+	LinkOpenTarget                 string `json:"link_open_target"`
+	ReadingPanelLayout             string `json:"reading_panel_layout"`
 	AutoRefreshEnabled             bool   `json:"auto_refresh_enabled"`
 	ReleaseCheckEnabled            bool   `json:"release_check_enabled"`
 	ReleaseCheckIncludePrereleases bool   `json:"release_check_include_prereleases"`
@@ -461,8 +463,8 @@ func ensureAppSettings(db *sql.DB) error {
 func (app *App) getSettings() (*AppSettings, error) {
 	var s AppSettings
 	err := app.db.QueryRow(
-		"SELECT id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, updated_at FROM app_settings WHERE id = 1",
-	).Scan(&s.ID, &s.RefreshIntervalMin, &s.MaxArticlesPerFeed, &s.DefaultDisplayMode, &s.DefaultSortOrder, &s.AutoRefreshEnabled, &s.ReleaseCheckEnabled, &s.ReleaseCheckIncludePrereleases, &s.UpdatedAt)
+		"SELECT id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, link_open_target, reading_panel_layout, updated_at FROM app_settings WHERE id = 1",
+	).Scan(&s.ID, &s.RefreshIntervalMin, &s.MaxArticlesPerFeed, &s.DefaultDisplayMode, &s.DefaultSortOrder, &s.AutoRefreshEnabled, &s.ReleaseCheckEnabled, &s.ReleaseCheckIncludePrereleases, &s.LinkOpenTarget, &s.ReadingPanelLayout, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -470,8 +472,14 @@ func (app *App) getSettings() (*AppSettings, error) {
 }
 
 func (app *App) saveSettings(settings AppSettings) error {
+	if settings.LinkOpenTarget == "" {
+		settings.LinkOpenTarget = "tab"
+	}
+	if settings.ReadingPanelLayout == "" {
+		settings.ReadingPanelLayout = "right"
+	}
 	_, err := app.db.Exec(
-		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, updated_at) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET refresh_interval_min = excluded.refresh_interval_min, max_articles_per_feed = excluded.max_articles_per_feed, default_display_mode = excluded.default_display_mode, default_sort_order = excluded.default_sort_order, auto_refresh_enabled = excluded.auto_refresh_enabled, release_check_enabled = excluded.release_check_enabled, release_check_include_prereleases = excluded.release_check_include_prereleases, updated_at = excluded.updated_at",
+		"INSERT INTO app_settings(id, refresh_interval_min, max_articles_per_feed, default_display_mode, default_sort_order, auto_refresh_enabled, release_check_enabled, release_check_include_prereleases, link_open_target, reading_panel_layout, updated_at) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET refresh_interval_min = excluded.refresh_interval_min, max_articles_per_feed = excluded.max_articles_per_feed, default_display_mode = excluded.default_display_mode, default_sort_order = excluded.default_sort_order, auto_refresh_enabled = excluded.auto_refresh_enabled, release_check_enabled = excluded.release_check_enabled, release_check_include_prereleases = excluded.release_check_include_prereleases, link_open_target = excluded.link_open_target, reading_panel_layout = excluded.reading_panel_layout, updated_at = excluded.updated_at",
 		settings.RefreshIntervalMin,
 		settings.MaxArticlesPerFeed,
 		settings.DefaultDisplayMode,
@@ -479,6 +487,8 @@ func (app *App) saveSettings(settings AppSettings) error {
 		boolToInt(settings.AutoRefreshEnabled),
 		boolToInt(settings.ReleaseCheckEnabled),
 		boolToInt(settings.ReleaseCheckIncludePrereleases),
+		settings.LinkOpenTarget,
+		settings.ReadingPanelLayout,
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	return err
@@ -594,10 +604,12 @@ func (app *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	page := struct {
 		Title   string
+		Version string
 		IsAdmin bool
 		UserID  int64
 	}{
 		Title:   "feedss",
+		Version: version,
 		IsAdmin: false,
 	}
 	if session, ok := app.getSession(r); ok {
@@ -3088,11 +3100,23 @@ func (app *App) handleSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		MaxArticlesPerFeed: parseIntOrDefault(r.FormValue("max_articles_per_feed"), 500),
 		DefaultDisplayMode: strings.TrimSpace(r.FormValue("default_display_mode")),
 		DefaultSortOrder:   strings.TrimSpace(r.FormValue("default_sort_order")),
+		LinkOpenTarget:     strings.TrimSpace(r.FormValue("link_open_target")),
+		ReadingPanelLayout: strings.TrimSpace(r.FormValue("reading_panel_layout")),
 		AutoRefreshEnabled: strings.EqualFold(strings.TrimSpace(r.FormValue("auto_refresh_enabled")), "true") || r.FormValue("auto_refresh_enabled") == "1",
 		ReleaseCheckEnabled: strings.EqualFold(strings.TrimSpace(r.FormValue("release_check_enabled")), "true") ||
 			r.FormValue("release_check_enabled") == "1",
 		ReleaseCheckIncludePrereleases: strings.EqualFold(strings.TrimSpace(r.FormValue("release_check_include_prereleases")), "true") ||
 			r.FormValue("release_check_include_prereleases") == "1",
+	}
+	if settings.LinkOpenTarget == "" {
+		settings.LinkOpenTarget = "tab"
+	}
+	if settings.ReadingPanelLayout == "" {
+		settings.ReadingPanelLayout = "right"
+	}
+	if (settings.LinkOpenTarget != "tab" && settings.LinkOpenTarget != "panel") || (settings.ReadingPanelLayout != "right" && settings.ReadingPanelLayout != "bottom") {
+		http.Error(w, "invalid reading panel settings", http.StatusBadRequest)
+		return
 	}
 	if settings.DefaultDisplayMode == "" {
 		settings.DefaultDisplayMode = "headline"
@@ -3207,6 +3231,8 @@ func defaultAppSettings() *AppSettings {
 		MaxArticlesPerFeed:             500,
 		DefaultDisplayMode:             "headline",
 		DefaultSortOrder:               "desc",
+		LinkOpenTarget:                 "tab",
+		ReadingPanelLayout:             "right",
 		AutoRefreshEnabled:             true,
 		ReleaseCheckEnabled:            true,
 		ReleaseCheckIncludePrereleases: false,

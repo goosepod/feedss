@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20261117-1">
+  <link rel="stylesheet" href="/static/styles.css?v=20261118-7">
 </head>
 <body data-user-id="{{.UserID}}">
   <div class="app-shell">
@@ -102,8 +102,21 @@
             <button id="mark-all-read-btn" class="button-secondary" type="button" disabled>Mark all read</button>
           </div>
         </header>
-        <div id="article-pane" class="article-pane">
+        <div id="reading-workspace" class="reading-workspace">
+        <div id="article-pane" class="article-pane" tabindex="-1">
           <div class="empty-state">Choose a feed to start reading.</div>
+        </div>
+        <div id="reading-panel-divider" class="reading-panel-divider" role="separator" aria-label="Resize reading panel" aria-controls="reading-panel" aria-valuemin="25" aria-valuemax="75" tabindex="0"></div>
+        <section id="reading-panel" class="reading-panel" aria-label="Reading panel" hidden>
+          <header class="reading-panel-header">
+            <strong id="reading-panel-title">Reading panel</strong>
+            <a id="reading-panel-external" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+            <button id="close-reading-panel" class="button-secondary" type="button" aria-keyshortcuts="Escape x" title="Close reading panel (Esc or X)">Close</button>
+          </header>
+          <p id="reading-panel-note" class="reading-panel-note">If this site blocks embedded viewing, use Open in new tab.</p>
+          <div id="reading-panel-discussion" class="hn-discussion" role="region" aria-label="Hacker News discussion" tabindex="0" hidden></div>
+          <iframe id="reading-panel-frame" title="Linked article or comments" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+        </section>
         </div>
       </main>
     </div>
@@ -255,6 +268,16 @@
         <option value="desc">Newest first</option>
         <option value="asc">Oldest first</option>
       </select>
+      <label for="settings-link-target">Open article and comment links in</label>
+      <select id="settings-link-target">
+        <option value="tab">New tab</option>
+        <option value="panel">Reading panel</option>
+      </select>
+      <label for="settings-panel-layout">Reading panel position</label>
+      <select id="settings-panel-layout">
+        <option value="right">Right of feed items</option>
+        <option value="bottom">Below feed items</option>
+      </select>
       <label class="checkbox-row" for="settings-auto-refresh">
         <input id="settings-auto-refresh" type="checkbox">
         <span>Refresh feeds automatically</span>
@@ -293,6 +316,7 @@
         <button type="button" id="cancel-settings-btn" class="button-secondary">Cancel</button>
         <button type="submit" id="save-settings-btn">Save settings</button>
       </div>
+      <p id="app-version" class="dialog-subtitle">feedss {{.Version}}</p>
     </form>
   </dialog>
 
@@ -320,6 +344,9 @@
         <div><dt><kbd>Shift</kbd> + <kbd>K</kbd></dt><dd>Previous group</dd></div>
         <div><dt><kbd>V</kbd></dt><dd>Open original</dd></div>
         <div><dt><kbd>C</kbd></dt><dd>Open comments</dd></div>
+        <div><dt><kbd>Esc</kbd> / <kbd>X</kbd></dt><dd>Close reading panel</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>←</kbd> / <kbd>→</kbd></dt><dd>Resize the right reading panel</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Resize the bottom reading panel</dd></div>
 		<div><dt><kbd>R</kbd></dt><dd>Refresh current view and hide read articles</dd></div>
 		<div><dt><kbd>S</kbd></dt><dd>Save or unsave selected article</dd></div>
 		<div><dt><kbd>/</kbd></dt><dd>Show search</dd></div>
@@ -345,6 +372,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20261117-1"></script>
+  <script src="/static/app.js?v=20261118-7"></script>
 </body>
 </html>

@@ -116,12 +116,23 @@ Use `ghcr.io/goosepod/feedss:latest` for the newest tagged release.
 - `j` / `k`: next or previous article
 - `v`: open the selected article
 - `c`: open comments when available
+- `Esc` / `x`: close the reading panel
+- `Shift` + Left / Right: resize the right reading panel
+- `Shift` + Up / Down: resize the bottom reading panel
 - `r`: refresh the current feed or group from the top and hide read articles
 - `s`: save or unsave the selected article
 - `/`: show search and select the current query
 - `+`: add a feed
 - `Shift+A`: mark the current feed or group as read
 - `?`: show shortcuts
+
+In Settings, choose whether article and comment links open in a new tab or in the
+reading panel. Place the panel to the right of the feed items or below them. On
+narrow screens the panel appears below the items. Modified clicks still use the
+browser’s usual new-tab behavior. Some sites block embedded viewing or require
+browser features unavailable in the panel. **Open in new tab** closes the panel and opens the link separately.
+Click back into feedss to use its shortcuts after interacting with an embedded page.
+The bottom of Settings shows the running app version (`dev` for an unversioned build).
 
 ## Adding Feeds
 

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-18
+
+### Added
+
+- Open articles and discussions in a reading panel to the right of the item list or below it. Choose the panel or a new tab in Settings.
+- Resize the reading panel by dragging its divider or using the keyboard. The browser remembers the size for each layout.
+- Read Hacker News comments and nested replies in the panel, with a link to the full discussion.
+- View the running feedss version at the bottom of Settings.
+
+### Fixed
+
+- Item lists show favicons in individual feeds and library views. If the feed host has no icon, feedss tries the article's site.
+
 ## [1.1.8] - 2026-11-17
 
 ### Fixed
@@ -209,7 +222,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v1.1.8...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/goosepod/feedss/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/goosepod/feedss/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/goosepod/feedss/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/goosepod/feedss/compare/v1.1.5...v1.1.6

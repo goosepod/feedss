@@ -221,6 +221,16 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		Version: 10,
+		Name:    "add_reading_panel_settings",
+		Apply: func(db *sql.DB) error {
+			if err := ensureColumn(db, "app_settings", "link_open_target", "TEXT NOT NULL DEFAULT 'tab'"); err != nil {
+				return err
+			}
+			return ensureColumn(db, "app_settings", "reading_panel_layout", "TEXT NOT NULL DEFAULT 'right'")
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

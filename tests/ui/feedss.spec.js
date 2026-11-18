@@ -163,10 +163,14 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		contentType: 'image/png',
 		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
 	}));
-	await page.route('**/api/favicon?url=**', route => route.fulfill({
-		contentType: 'image/png',
-		body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
-	}));
+	await page.route('**/api/favicon?url=**', route => {
+		const origin = new URL(route.request().url()).searchParams.get('url');
+		if (origin === 'https://www.boardgamequest.com') return route.fulfill({ status: 502 });
+		return route.fulfill({
+			contentType: 'image/png',
+			body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+		});
+	});
 	await page.route('**/api/groups', route => route.fulfill({ json: groups }));
 	await page.route('**/api/feeds', route => route.fulfill({ json: feeds }));
 	await page.route('**/api/sync**', route => {
@@ -638,6 +642,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 
 	await openMobileSubscriptions(page);
 	await programmingGroup.locator('.feed-item').filter({ hasText: 'Hacker News' }).click();
+	const feedIcon = articleRows.first().locator('.article-site-icon');
+	await expect(feedIcon).toHaveAttribute('src', /url=https%3A%2F%2Fnews\.ycombinator\.com/);
+	await expect.poll(() => feedIcon.evaluate(icon => icon.naturalWidth)).toBeGreaterThan(0);
 	await expect(articleRows).toHaveCount(30);
 	const hackerUnreadCount = articles.filter(article => article.feed_id === 11 && !article.is_read).length;
 	await expect(page.locator('#article-count')).toHaveText(`${hackerUnreadCount} articles`);
@@ -727,6 +734,9 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const boardGamesToggle = boardGamesGroup.locator('.group-toggle');
 	if (await boardGamesToggle.getAttribute('aria-expanded') === 'false') await boardGamesToggle.click();
 	await boardGamesGroup.locator('.feed-item').filter({ hasText: 'Board Game Quest' }).click();
+	const fallbackIcon = articleRows.first().locator('.article-site-icon');
+	await expect(fallbackIcon).toHaveAttribute('src', /url=https%3A%2F%2Fexample\.com/);
+	await expect.poll(() => fallbackIcon.evaluate(icon => icon.naturalWidth)).toBeGreaterThan(0);
 	await page.getByRole('button', { name: 'Feed settings', exact: true }).click();
 	const removalSettingsDialog = page.getByRole('dialog', { name: 'Feed settings' });
 	await expect(removalSettingsDialog.getByLabel('Feed name')).toHaveValue('Board Game Quest');

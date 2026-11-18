@@ -3,6 +3,12 @@ const FOREGROUND_SYNC_POLL_INTERVAL_MS = 3_000;
 const BACKGROUND_SYNC_POLL_INTERVAL_MS = 15 * 60_000;
 const DEFAULT_TITLE = 'feedss';
 const STATIC_FAVICON = '/static/favicon.svg';
+const NARROW_READER = window.matchMedia('(max-width: 760px)');
+const READING_PANEL_MIN = 25;
+const READING_PANEL_MAX = 75;
+const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item/';
+const HN_COMMENT_LIMIT = 60;
+const HN_COMMENT_TAGS = new Set(['a', 'b', 'blockquote', 'br', 'code', 'em', 'i', 'p', 'pre', 'strong']);
 const SELECTED_GROUP_STORAGE_KEY = `feedss:selected-group:${document.body.dataset.userId || 'unknown'}`;
 
 function storedGroupID() {
@@ -46,6 +52,10 @@ const state = {
 	searchGroupId: null,
 	defaultDisplayMode: 'headline',
 	defaultSortOrder: 'desc',
+	linkOpenTarget: 'tab',
+	readingPanelLayout: 'right',
+	readingPanelOpener: null,
+	readingPanelSizes: { right: 50, bottom: 50 },
 	releaseCheckEnabled: true,
 	releaseCheckIncludePrereleases: false,
 	selectedArticleIndex: -1,
@@ -71,10 +81,11 @@ if ('serviceWorker' in navigator) {
 const elements = {};
 let syncPollTimer = null;
 let statusTimer = null;
+let readingPanelRequest = null;
 const STATUS_DURATION_MS = 6_000;
 
 function mobileMenuIsAvailable() {
-	return window.matchMedia('(max-width: 760px)').matches;
+	return NARROW_READER.matches;
 }
 
 function closeMobileMenus() {
@@ -256,6 +267,12 @@ async function saveAccount() {
 }
 
 function applySettings(settings) {
+	state.linkOpenTarget = settings.link_open_target === 'panel' ? 'panel' : 'tab';
+	state.readingPanelLayout = settings.reading_panel_layout === 'bottom' ? 'bottom' : 'right';
+	elements.settingsLinkTarget.value = state.linkOpenTarget;
+	elements.settingsPanelLayout.value = state.readingPanelLayout;
+	applyReadingPanelLayout();
+	if (state.linkOpenTarget !== 'panel') closeReadingPanel(false);
 	state.defaultDisplayMode = settings.default_display_mode || 'headline';
 	state.defaultSortOrder = settings.default_sort_order || 'desc';
   elements.settingsRefresh.value = settings.refresh_interval_min ?? 15;
@@ -852,16 +869,24 @@ function siteFaviconURL(rawURL) {
 }
 
 function createSiteIcon(article) {
-	const feed = state.feeds.find(item => item.id === article.feed_id);
-	const faviconURL = siteFaviconURL(feed?.url || article.link);
-	if (!faviconURL) return null;
-	const icon = document.createElement('img');
-	icon.className = 'article-site-icon';
-	icon.src = faviconURL;
-	icon.alt = '';
-	icon.loading = 'lazy';
-	icon.addEventListener('error', () => icon.remove(), { once: true });
-	return icon;
+    const feed = state.feeds.find(item => item.id === article.feed_id);
+    const feedIconURL = siteFaviconURL(feed?.url);
+    const articleIconURL = siteFaviconURL(article.link);
+    if (!feedIconURL && !articleIconURL) return null;
+
+    const icon = document.createElement('img');
+    icon.className = 'article-site-icon';
+    icon.alt = '';
+    icon.loading = 'lazy';
+    icon.addEventListener('error', () => {
+        if (articleIconURL && icon.getAttribute('src') !== articleIconURL) {
+            icon.src = articleIconURL;
+        } else {
+            icon.remove();
+        }
+    });
+    icon.src = feedIconURL || articleIconURL;
+    return icon;
 }
 
 function sanitizeHTML(rawHTML, baseURL) {
@@ -1098,10 +1123,8 @@ function renderArticles() {
 		metaText.textContent = state.viewMode === 'group'
 			? [article.feed_title, dateText].filter(Boolean).join(' - ')
 			: (dateText || article.feed_title || feed.title);
-		if (state.viewMode === 'group' && article.feed_title) {
-			const siteIcon = createSiteIcon(article);
-			if (siteIcon) meta.appendChild(siteIcon);
-		}
+		const siteIcon = createSiteIcon(article);
+		if (siteIcon) meta.appendChild(siteIcon);
 		meta.appendChild(metaText);
 		header.append(headingRow, meta);
     articleElement.appendChild(header);
@@ -1651,6 +1674,8 @@ async function saveSettings() {
     max_articles_per_feed: elements.settingsMax.value,
     default_display_mode: elements.settingsDisplay.value,
     default_sort_order: elements.settingsSort.value,
+    link_open_target: elements.settingsLinkTarget.value,
+    reading_panel_layout: elements.settingsPanelLayout.value,
     auto_refresh_enabled: elements.settingsAuto.checked ? 'true' : 'false',
 	release_check_enabled: elements.settingsReleaseCheck.checked ? 'true' : 'false',
 	release_check_include_prereleases: elements.settingsReleaseChannel.value === 'prerelease' ? 'true' : 'false',
@@ -1769,7 +1794,281 @@ function openSelectedArticleField(field) {
 		activateArticle(article, 0);
 	}
 	const url = safeExternalURL(article?.[field]);
-	if (url) window.open(url, '_blank', 'noopener');
+	if (url) openArticleURL(url, article.title);
+}
+
+function readingPanelSizeKey(layout) {
+    return `feedss:reading-panel-size:${document.body.dataset.userId}:${layout}`;
+}
+
+function applyReadingPanelLayout() {
+    const layout = NARROW_READER.matches ? 'bottom' : state.readingPanelLayout;
+    elements.readingWorkspace.dataset.layout = layout;
+    elements.readingPanelDivider.setAttribute('aria-orientation', layout === 'bottom' ? 'horizontal' : 'vertical');
+    setReadingPanelSize(layout, state.readingPanelSizes[layout]);
+}
+
+function setReadingPanelSize(layout, value, remember = false) {
+    const size = Math.round(Math.max(READING_PANEL_MIN, Math.min(READING_PANEL_MAX, value)));
+    state.readingPanelSizes[layout] = size;
+    if (elements.readingWorkspace.dataset.layout === layout) {
+        elements.readingWorkspace.style.setProperty('--reading-panel-size', `${size}%`);
+        elements.readingPanelDivider.setAttribute('aria-valuenow', String(100 - size));
+        elements.readingPanelDivider.setAttribute('aria-valuetext', `Reading panel: ${size}%`);
+    }
+    if (remember) {
+        try {
+            localStorage.setItem(readingPanelSizeKey(layout), String(size));
+        } catch {
+            // The current session still keeps the chosen size.
+        }
+    }
+}
+
+function resizeReadingPanelFromKey(event) {
+    const layout = elements.readingWorkspace.dataset.layout;
+    const [grow, shrink] = layout === 'bottom' ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+    if (event.key !== grow && event.key !== shrink) return;
+    event.preventDefault();
+    setReadingPanelSize(layout, state.readingPanelSizes[layout] + (event.key === grow ? 5 : -5), true);
+}
+
+function bindReadingPanel() {
+    const divider = elements.readingPanelDivider;
+    const workspace = elements.readingWorkspace;
+    for (const layout of ['right', 'bottom']) {
+        try {
+            const stored = Number(localStorage.getItem(readingPanelSizeKey(layout)));
+            if (stored >= READING_PANEL_MIN && stored <= READING_PANEL_MAX) {
+                state.readingPanelSizes[layout] = stored;
+            }
+        } catch {
+            // The layout can still be resized when browser storage is unavailable.
+        }
+    }
+    applyReadingPanelLayout();
+    NARROW_READER.addEventListener('change', applyReadingPanelLayout);
+
+    let drag;
+    divider.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || drag) return;
+        const layout = workspace.dataset.layout;
+        const vertical = layout === 'bottom';
+        drag = {
+            pointer: event.pointerId, layout, vertical,
+            start: vertical ? event.clientY : event.clientX,
+            extent: vertical ? workspace.clientHeight : workspace.clientWidth,
+            size: state.readingPanelSizes[layout],
+        };
+        divider.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+    divider.addEventListener('pointermove', event => {
+        if (drag?.pointer !== event.pointerId || drag.layout !== workspace.dataset.layout) return;
+        const position = drag.vertical ? event.clientY : event.clientX;
+        setReadingPanelSize(drag.layout, drag.size + (drag.start - position) * 100 / drag.extent);
+    });
+    divider.addEventListener('lostpointercapture', event => {
+        if (drag?.pointer !== event.pointerId) return;
+        setReadingPanelSize(drag.layout, state.readingPanelSizes[drag.layout], true);
+        drag = null;
+    });
+    divider.addEventListener('keydown', event => {
+        if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) resizeReadingPanelFromKey(event);
+    });
+
+    document.getElementById('close-reading-panel').addEventListener('click', () => closeReadingPanel());
+    elements.readingPanelExternal.addEventListener('click', event => {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        const url = event.currentTarget.href;
+        event.preventDefault();
+        closeReadingPanel();
+        window.open(url, '_blank', 'noopener,noreferrer');
+    });
+}
+
+function hackerNewsItemID(url) {
+    const page = new URL(url);
+    if (page.origin !== 'https://news.ycombinator.com' || page.pathname !== '/item') return null;
+    const id = Number(page.searchParams.get('id'));
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+async function fetchHackerNewsItem(id, signal) {
+    const response = await fetch(`${HN_ITEM_API}${id}.json`, {
+        signal,
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+    });
+    if (!response.ok) throw new Error(`Hacker News returned ${response.status}`);
+    return response.json();
+}
+
+function hackerNewsCommentBody(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html || '';
+    const body = document.createElement('div');
+    body.className = 'hn-comment-body';
+
+    function appendSafeChildren(source, target) {
+        for (const node of source.childNodes) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                target.append(node.textContent);
+            } else if (node.nodeType === Node.ELEMENT_NODE && HN_COMMENT_TAGS.has(node.localName)) {
+                const element = document.createElement(node.localName);
+                const href = node.localName === 'a' && safeExternalURL(node.getAttribute('href'), 'https://news.ycombinator.com/');
+                if (href) {
+                    element.href = href;
+                    element.target = '_blank';
+                    element.rel = 'noopener noreferrer';
+                }
+                appendSafeChildren(node, element);
+                target.append(element);
+            }
+        }
+    }
+    appendSafeChildren(template.content, body);
+    return body;
+}
+
+function renderHackerNewsComments(ids, comments, seen = new Set(), depth = 0) {
+    const list = document.createElement('ol');
+    list.className = depth ? 'hn-comment-list hn-replies' : 'hn-comment-list';
+    for (const id of ids) {
+        const comment = comments.get(id);
+        if (!comment || seen.has(id)) continue;
+        seen.add(id);
+        const row = document.createElement('li');
+        row.className = 'hn-comment';
+        if (comment.dead || comment.deleted) {
+            row.textContent = comment.deleted ? '[deleted]' : '[removed]';
+        } else {
+            const author = document.createElement('strong');
+            author.textContent = comment.by || 'Unknown';
+            const link = createArticleLink('Permalink', `https://news.ycombinator.com/item?id=${id}`);
+            const meta = document.createElement('div');
+            meta.className = 'hn-comment-meta';
+            meta.append(author, link);
+            row.append(meta, hackerNewsCommentBody(comment.text));
+        }
+        if (comment.kids?.some(child => comments.has(child) && !seen.has(child))) {
+            row.append(renderHackerNewsComments(comment.kids, comments, seen, depth + 1));
+        }
+        list.append(row);
+    }
+    return list;
+}
+
+async function showHackerNewsDiscussion(id, signal) {
+    const container = elements.readingPanelDiscussion;
+    const status = document.createElement('p');
+    status.className = 'hn-discussion-status';
+    status.setAttribute('role', 'status');
+    status.textContent = 'Loading Hacker News discussion…';
+    container.replaceChildren(status);
+    container.scrollTop = 0;
+
+    try {
+        const story = await fetchHackerNewsItem(id, signal);
+        if (!story) throw new Error('Hacker News discussion not found');
+        const roots = story.type === 'comment' ? [id] : (story.kids || []);
+        const comments = new Map();
+        const queued = new Set(roots);
+        const queue = [...queued];
+        let requested = 0;
+        let unavailable = false;
+        while (queue.length && requested < HN_COMMENT_LIMIT) {
+            const batch = queue.splice(0, Math.min(8, HN_COMMENT_LIMIT - requested));
+            requested += batch.length;
+            const results = await Promise.allSettled(batch.map(itemID => itemID === id ? story : fetchHackerNewsItem(itemID, signal)));
+            if (signal.aborted) return;
+            results.forEach((result, index) => {
+                if (result.status === 'rejected') {
+                    unavailable = true;
+                    return;
+                }
+                const comment = result.value;
+                if (!comment) return;
+                comments.set(batch[index], comment);
+                for (const child of comment.kids || []) {
+                    if (!queued.has(child) && Number.isSafeInteger(child) && child > 0) {
+                        queued.add(child);
+                        queue.push(child);
+                    }
+                }
+            });
+        }
+        if (signal.aborted) return;
+        if (roots.length && !comments.size && unavailable) throw new Error('Hacker News comments unavailable');
+        status.textContent = !comments.size ? 'No comments yet.' : `Hacker News · ${comments.size} ${comments.size === 1 ? 'comment' : 'comments'}`;
+        if (queue.length || unavailable) status.textContent += ' shown. Open in new tab for the full discussion.';
+        if (comments.size) container.append(renderHackerNewsComments(roots, comments));
+    } catch {
+        if (!signal.aborted) status.textContent = 'Could not load Hacker News comments. Use Open in new tab to read the discussion.';
+    }
+}
+
+function openArticleURL(rawURL, title = 'Reading panel', opener = document.activeElement) {
+    const url = safeExternalURL(rawURL);
+    if (!url) return;
+    if (state.linkOpenTarget !== 'panel') {
+        window.open(url, '_blank', 'noopener');
+        return;
+    }
+    state.readingPanelOpener = opener;
+    elements.readingPanelTitle.textContent = title;
+    elements.readingPanelExternal.href = url;
+    readingPanelRequest?.abort();
+    readingPanelRequest = null;
+    const discussionID = hackerNewsItemID(url);
+    elements.readingPanelDiscussion.hidden = !discussionID;
+    elements.readingPanelFrame.hidden = Boolean(discussionID);
+    elements.readingPanelNote.hidden = Boolean(discussionID);
+    if (discussionID) {
+        elements.readingPanelFrame.removeAttribute('src');
+        readingPanelRequest = new AbortController();
+        void showHackerNewsDiscussion(discussionID, readingPanelRequest.signal);
+    } else {
+        elements.readingPanelDiscussion.replaceChildren();
+        elements.readingPanelFrame.title = title;
+        elements.readingPanelFrame.src = url;
+    }
+    elements.readingPanel.hidden = false;
+    elements.readingWorkspace.classList.add('panel-open');
+    closeMobileMenus();
+}
+
+function closeReadingPanel(restoreFocus = true) {
+    if (elements.readingPanel.hidden) return;
+    elements.readingPanel.hidden = true;
+    readingPanelRequest?.abort();
+    readingPanelRequest = null;
+    elements.readingPanelDiscussion.replaceChildren();
+    elements.readingPanelFrame.removeAttribute('src');
+    elements.readingPanelExternal.removeAttribute('href');
+    elements.readingWorkspace.classList.remove('panel-open');
+    if (restoreFocus) {
+        const opener = state.readingPanelOpener;
+        (opener?.isConnected ? opener : elements.articlePane).focus({ preventScroll: true });
+    }
+    state.readingPanelOpener = null;
+}
+
+function handleArticleLinkClick(event) {
+    const link = event.target.closest('a[href]');
+    if (!link || state.linkOpenTarget !== 'panel' || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const url = safeExternalURL(link.href);
+    if (!url) return;
+    event.preventDefault();
+    const articleElement = link.closest('[data-article-id]');
+    const article = state.articles.find(item => String(item.id) === articleElement?.dataset.articleId);
+    if (article) {
+        state.selectedArticleIndex = state.articles.indexOf(article);
+        elements.articlePane.querySelector('.article.selected')?.classList.remove('selected');
+        articleElement.classList.add('selected');
+        void markArticleRead(article);
+    }
+    openArticleURL(url, link.classList.contains('article-title') ? link.textContent : `${article?.title || 'Article'} — ${link.textContent}`, link);
 }
 
 function toggleSelectedArticleSaved() {
@@ -1792,7 +2091,16 @@ function bindKeyboard() {
 			return;
 		}
     if (document.querySelector('dialog[open]')) return;
-    if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
+    if ((event.key === 'Escape' || event.key.toLowerCase() === 'x') && !event.metaKey && !event.ctrlKey && !event.altKey && !elements.readingPanel.hidden && (event.key === 'Escape' || !event.target.closest('input, textarea, select, [contenteditable]'))) {
+        event.preventDefault();
+        closeReadingPanel();
+        return;
+    }
+    if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+    if (!elements.readingPanel.hidden && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        resizeReadingPanelFromKey(event);
+        if (event.defaultPrevented) return;
+    }
     const key = event.key.toLowerCase();
 		if (event.key === '?') {
 			event.preventDefault();
@@ -1864,6 +2172,13 @@ function cacheElements() {
 	saveGroupSettings: document.getElementById('save-group-settings-btn'), deleteGroupModal: document.getElementById('delete-group-modal'),
 	deleteGroupSummary: document.getElementById('delete-group-summary'), deleteGroupError: document.getElementById('delete-group-error'),
 	confirmDeleteGroup: document.getElementById('confirm-delete-group-btn'),
+    readingWorkspace: document.getElementById('reading-workspace'), readingPanel: document.getElementById('reading-panel'),
+    readingPanelDivider: document.getElementById('reading-panel-divider'),
+    readingPanelTitle: document.getElementById('reading-panel-title'), readingPanelFrame: document.getElementById('reading-panel-frame'),
+    readingPanelExternal: document.getElementById('reading-panel-external'),
+    readingPanelNote: document.getElementById('reading-panel-note'),
+    readingPanelDiscussion: document.getElementById('reading-panel-discussion'),
+    settingsLinkTarget: document.getElementById('settings-link-target'), settingsPanelLayout: document.getElementById('settings-panel-layout'),
     settingsModal: document.getElementById('settings-modal'), settingsForm: document.getElementById('settings-form'),
     settingsRefresh: document.getElementById('settings-refresh-interval'), settingsMax: document.getElementById('settings-max-articles'),
 	settingsDisplay: document.getElementById('settings-display-mode'), settingsSort: document.getElementById('settings-sort-order'),
@@ -1996,6 +2311,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 		elements.markAllReadModal.close();
 		void markAllRead();
 	});
+    elements.articlePane.addEventListener('click', handleArticleLinkClick);
+    bindReadingPanel();
 	elements.articlePane.addEventListener('scroll', maybeLoadMoreArticles, { passive: true });
   bindKeyboard();
 	try {
