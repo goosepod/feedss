@@ -145,8 +145,10 @@ full feed content even when the summary omits them. In these modes, when a feed
 entry has no image, feedss can retrieve the lead image from the original page using
 its image metadata or article content. Images pass through the existing image
 proxy; a failed image request is retried once.
-Article images retain their proportions and fit within 500 pixels wide and 340
-pixels tall, with a 224-pixel height limit on mobile.
+Under **Feed settings → Image size**, choose **Small** for compact previews,
+**Standard** for the default limits, or **Full size** to fit the available
+reading width. Images retain their proportions at every size. Group views apply
+the display mode and image size of the feed each article came from.
 
 ## Organizing Subscriptions
 

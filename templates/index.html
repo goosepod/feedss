@@ -8,7 +8,7 @@
   <link id="favicon" rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="stylesheet" href="/static/styles.css?v=20261118-7">
+  <link rel="stylesheet" href="/static/styles.css?v=20261119-2">
 </head>
 <body data-user-id="{{.UserID}}">
   <div class="app-shell">
@@ -164,6 +164,12 @@
 				<option value="headline">Headline</option>
 				<option value="headline-blurb">Headline and summary</option>
 				<option value="full">Full content</option>
+			</select>
+			<label for="feed-settings-image-size">Image size</label>
+			<select id="feed-settings-image-size">
+				<option value="small">Small</option>
+				<option value="standard" selected>Standard</option>
+				<option value="full">Full size</option>
 			</select>
 			<label for="feed-settings-sort-direction">Sort order</label>
 			<select id="feed-settings-sort-direction">
@@ -372,6 +378,6 @@
   </dialog>
 
   <input id="opml-file-input" type="file" accept=".opml,.xml" hidden>
-  <script src="/static/app.js?v=20261118-7"></script>
+  <script src="/static/app.js?v=20261119-2"></script>
 </body>
 </html>

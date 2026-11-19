@@ -83,6 +83,7 @@ type Feed struct {
 	URL                     string `json:"url"`
 	GroupID                 int64  `json:"group_id"`
 	DisplayMode             string `json:"display_mode"`
+	ImageSize               string `json:"image_size"`
 	SortDirection           string `json:"sort_direction"`
 	CreatedBy               int64  `json:"created_by"`
 	CreatedAt               string `json:"created_at"`
@@ -1794,6 +1795,17 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 	displayMode := strings.TrimSpace(r.FormValue("display_mode"))
 	sortDirection := strings.TrimSpace(r.FormValue("sort_direction"))
 	validDisplayModes := map[string]bool{"headline": true, "headline-blurb": true, "full": true}
+	var imageSize *string
+	if r.Form.Has("image_size") {
+		size := strings.TrimSpace(r.FormValue("image_size"))
+		switch size {
+		case "small", "standard", "full":
+			imageSize = &size
+		default:
+			http.Error(w, "invalid image size", http.StatusBadRequest)
+			return
+		}
+	}
 	if feedID == "" {
 		http.Error(w, "invalid feed settings", http.StatusBadRequest)
 		return
@@ -1835,21 +1847,21 @@ func (app *App) handleUpdateFeedAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "group not found", http.StatusBadRequest)
 		return
 	}
-	result, err := app.db.Exec(
-		"UPDATE feeds SET title = ?, url = ?, group_id = ?, display_mode = ?, sort_direction = ?, etag = CASE WHEN url = ? THEN etag ELSE '' END, last_modified = CASE WHEN url = ? THEN last_modified ELSE '' END WHERE id = ? AND created_by = ?",
-		feedTitle, feedURL, groupID, displayMode, sortDirection, feedURL, feedURL, feedID, user.ID,
-	)
+	var savedImageSize string
+	err := app.db.QueryRow(
+		"UPDATE feeds SET title = ?, url = ?, group_id = ?, display_mode = ?, sort_direction = ?, image_size = COALESCE(?, image_size), etag = CASE WHEN url = ? THEN etag ELSE '' END, last_modified = CASE WHEN url = ? THEN last_modified ELSE '' END WHERE id = ? AND created_by = ? RETURNING image_size",
+		feedTitle, feedURL, groupID, displayMode, sortDirection, imageSize, feedURL, feedURL, feedID, user.ID,
+	).Scan(&savedImageSize)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "feed not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		log.Printf("update feed settings: %v", err)
 		http.Error(w, "failed to update feed", http.StatusInternalServerError)
 		return
 	}
-	updated, _ := result.RowsAffected()
-	if updated == 0 {
-		http.Error(w, "feed not found", http.StatusNotFound)
-		return
-	}
-	jsonSuccess(w, map[string]any{"status": "ok", "title": feedTitle, "url": feedURL, "group_id": groupID, "display_mode": displayMode, "sort_direction": sortDirection})
+	jsonSuccess(w, map[string]any{"status": "ok", "title": feedTitle, "url": feedURL, "group_id": groupID, "display_mode": displayMode, "sort_direction": sortDirection, "image_size": savedImageSize})
 }
 
 func (app *App) handleDeleteFeedAPI(w http.ResponseWriter, r *http.Request) {
@@ -2641,13 +2653,13 @@ func (app *App) listGroups(userID int64) ([]FeedGroup, error) {
 
 func (app *App) listFeeds(userID int64) ([]Feed, error) {
 	rows, err := app.db.Query(
-		`SELECT f.id, f.title, f.url, f.group_id, f.display_mode, f.sort_direction, f.created_by, f.created_at,
+		`SELECT f.id, f.title, f.url, f.group_id, f.display_mode, f.image_size, f.sort_direction, f.created_by, f.created_at,
 			COALESCE(SUM(CASE WHEN a.is_read = 0 THEN 1 ELSE 0 END), 0), COALESCE(f.last_refresh_error, ''),
 			COALESCE(f.last_refresh_at, ''), COALESCE(f.last_successful_refresh_at, '')
 		FROM feeds f
 		LEFT JOIN articles a ON a.feed_id = f.id
 		WHERE f.created_by = ?
-		GROUP BY f.id, f.title, f.url, f.group_id, f.display_mode, f.sort_direction, f.created_by, f.created_at,
+		GROUP BY f.id, f.title, f.url, f.group_id, f.display_mode, f.image_size, f.sort_direction, f.created_by, f.created_at,
 			f.last_refresh_error, f.last_refresh_at, f.last_successful_refresh_at
 		ORDER BY f.title COLLATE NOCASE ASC`,
 		userID,
@@ -2661,7 +2673,7 @@ func (app *App) listFeeds(userID int64) ([]Feed, error) {
 	for rows.Next() {
 		var f Feed
 		if err := rows.Scan(
-			&f.ID, &f.Title, &f.URL, &f.GroupID, &f.DisplayMode, &f.SortDirection, &f.CreatedBy,
+			&f.ID, &f.Title, &f.URL, &f.GroupID, &f.DisplayMode, &f.ImageSize, &f.SortDirection, &f.CreatedBy,
 			&f.CreatedAt, &f.UnreadCount, &f.LastRefreshError, &f.LastRefreshAt, &f.LastSuccessfulRefreshAt,
 		); err != nil {
 			return nil, err

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-19
+
+### Added
+
+- Choose Small, Standard, or Full size for article images in Feed settings. Full size fits the available reading width and preserves image proportions.
+
+### Fixed
+
+- Article images have their own line and space before the following text.
+- Group views honor each feed’s display mode and image size. Opening a Headline item keeps its preview free of article images.
+
 ## [1.2.0] - 2026-11-18
 
 ### Added
@@ -222,7 +233,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial self-hosted RSS reader release.
 - Feed groups, unread counts, OPML import and export, display modes, keyboard navigation, automatic refresh, and SQLite storage.
 
-[Unreleased]: https://github.com/goosepod/feedss/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/goosepod/feedss/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/goosepod/feedss/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/goosepod/feedss/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/goosepod/feedss/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/goosepod/feedss/compare/v1.1.6...v1.1.7

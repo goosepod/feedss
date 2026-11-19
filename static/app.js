@@ -332,6 +332,10 @@ async function refreshSubscriptionMetadata() {
 		]);
 		state.groups = Array.isArray(groups) ? groups : [];
 		state.feeds = Array.isArray(feeds) ? feeds : [];
+		const imageSizes = new Map(state.feeds.map(feed => [String(feed.id), feed.image_size]));
+		elements.articlePane.querySelectorAll('.article[data-feed-id]').forEach(article => {
+			article.dataset.imageSize = imageSizes.get(article.dataset.feedId) || 'standard';
+		});
 		state.expandedGroupIds = new Set(
 			[...state.expandedGroupIds].filter(id => state.groups.some(group => group.id === id)),
 		);
@@ -479,7 +483,7 @@ async function loadGroupArticles(groupID, { hideRead = false } = {}) {
 			? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
 		state.expandedArticleIds = new Set(
-			state.defaultDisplayMode === 'headline' ? [] : state.articles.map(article => article.id),
+			state.articles.filter(article => getArticleDisplayMode(article) !== 'headline').map(article => article.id),
 		);
 		elements.articlePane.scrollTop = 0;
 		reconcileVisibleUnreadCount(group);
@@ -521,7 +525,7 @@ async function loadArticles(feedID, { hideRead = false } = {}) {
 		? data.has_more : state.articles.length < state.articleTotal;
 		state.selectedArticleIndex = -1;
 	state.expandedArticleIds = new Set(
-	  feed?.display_mode === 'headline' ? [] : state.articles.map(article => article.id),
+	  state.articles.filter(article => getArticleDisplayMode(article) !== 'headline').map(article => article.id),
 	);
 	elements.articlePane.scrollTop = 0;
 	reconcileVisibleUnreadCount(feed);
@@ -889,9 +893,10 @@ function createSiteIcon(article) {
     return icon;
 }
 
-function sanitizeHTML(rawHTML, baseURL) {
+function sanitizeHTML(rawHTML, baseURL, { includeImages = true } = {}) {
   const parsed = new DOMParser().parseFromString(rawHTML || '', 'text/html');
   parsed.querySelectorAll('script, style, iframe, object, embed, form, input, button, picture source').forEach(node => node.remove());
+  if (!includeImages) parsed.querySelectorAll('img, picture').forEach(node => node.remove());
   parsed.querySelectorAll('img').forEach(image => {
     const lazySource = image.getAttribute('data-src') || image.getAttribute('data-original');
     if (lazySource) image.setAttribute('src', lazySource);
@@ -929,9 +934,11 @@ function createArticleLink(label, rawURL) {
   return link;
 }
 
-function getCurrentDisplayMode() {
-	const feed = state.feeds.find(item => item.id === state.selectedFeedId);
-	return state.viewMode === 'group' ? state.defaultDisplayMode : (feed?.display_mode || 'headline');
+function getArticleDisplayMode(article) {
+	const inGroup = state.viewMode === 'group';
+	const feedID = inGroup ? article.feed_id : state.selectedFeedId;
+	const feed = state.feeds.find(item => item.id === feedID);
+	return feed?.display_mode || (inGroup ? state.defaultDisplayMode : 'headline');
 }
 
 function removeDuplicateCommentsLink(body, commentsLink) {
@@ -978,11 +985,11 @@ function createArticleContent(article) {
 
 	const body = document.createElement('div');
 	body.className = 'article-body';
-	const displayMode = getCurrentDisplayMode();
+	const displayMode = getArticleDisplayMode(article);
 	const includePreviewImages = displayMode !== 'headline';
 	const articleSource = displayMode === 'full'
 		? (article.content || article.description) : (article.description || article.content);
-	body.innerHTML = sanitizeHTML(articleSource, article.link) || '<p>No preview is available.</p>';
+	body.innerHTML = sanitizeHTML(articleSource, article.link, { includeImages: includePreviewImages }) || '<p>No preview is available.</p>';
 	// Summary feeds can carry images only in content:encoded. Keep the
 	// summary text while adding its full-content images to the preview.
 	if (includePreviewImages && !body.querySelector('img') && article.content && article.content !== articleSource) {
@@ -1024,7 +1031,7 @@ function createArticleContent(article) {
 	if (body.textContent.trim() || body.querySelector('img, video, audio')) content.appendChild(body);
 
 	const mediaURL = safeExternalURL(article.media_url);
-	if (mediaURL && getCurrentDisplayMode() === 'full') {
+	if (mediaURL && displayMode === 'full') {
 		const video = document.createElement('video');
 		video.controls = true;
 		video.src = mediaURL;
@@ -1089,6 +1096,8 @@ function renderArticles() {
     const articleElement = document.createElement('article');
     articleElement.className = `article${article.is_read ? ' read' : ' unread'}${index === state.selectedArticleIndex ? ' selected' : ''}`;
     articleElement.dataset.articleId = String(article.id);
+    articleElement.dataset.feedId = String(article.feed_id);
+    articleElement.dataset.imageSize = state.feeds.find(item => item.id === article.feed_id)?.image_size || 'standard';
 
     const header = document.createElement('div');
     header.className = 'article-header';
@@ -1216,8 +1225,8 @@ async function loadMoreArticles() {
 		state.articles.push(...articles);
 		state.hasMoreArticles = typeof data?.has_more === 'boolean'
 			? data.has_more : received.length === ARTICLE_PAGE_SIZE;
-		if (getCurrentDisplayMode() !== 'headline') {
-			articles.forEach(article => state.expandedArticleIds.add(article.id));
+		for (const article of articles) {
+			if (getArticleDisplayMode(article) !== 'headline') state.expandedArticleIds.add(article.id);
 		}
 		return articles.length > 0;
 	} catch (error) {
@@ -1445,6 +1454,7 @@ function openFeedSettings(feedOverride = null) {
 	elements.feedSettingsGroup.value = String(feed.group_id);
 	elements.feedSettingsURL.value = feed.url || '';
 	elements.feedSettingsDisplay.value = feed.display_mode || 'headline';
+	elements.feedSettingsImageSize.value = feed.image_size || 'standard';
 	elements.feedSettingsSort.value = feed.sort_direction || 'desc';
 	elements.feedSettingsModal.showModal();
 }
@@ -1455,6 +1465,7 @@ async function saveFeedSettings() {
 	setFormError(elements.feedSettingsError);
 	elements.saveFeedSettings.disabled = true;
 	const displayMode = elements.feedSettingsDisplay.value;
+	const imageSize = elements.feedSettingsImageSize.value;
 	const sortDirection = elements.feedSettingsSort.value;
 	const feedURL = elements.feedSettingsURL.value.trim();
 	const feedTitle = elements.feedSettingsTitle.value.trim();
@@ -1462,12 +1473,13 @@ async function saveFeedSettings() {
 	try {
 		await fetchJson('/api/feeds/update', {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({ feed_id: feed.id, title: feedTitle, group_id: groupID, url: feedURL, display_mode: displayMode, sort_direction: sortDirection }),
+			body: new URLSearchParams({ feed_id: feed.id, title: feedTitle, group_id: groupID, url: feedURL, display_mode: displayMode, image_size: imageSize, sort_direction: sortDirection }),
 		});
 		feed.title = feedTitle;
 		feed.group_id = groupID;
 		feed.url = feedURL;
 		feed.display_mode = displayMode;
+		feed.image_size = imageSize;
 		feed.sort_direction = sortDirection;
 		elements.feedSettingsModal.close();
 		state.selectedGroupId = groupID;
@@ -2164,6 +2176,7 @@ function cacheElements() {
 	feedSettingsName: document.getElementById('feed-settings-name'), feedSettingsTitle: document.getElementById('feed-settings-feed-title'),
 	feedSettingsGroup: document.getElementById('feed-settings-group'), feedSettingsURL: document.getElementById('feed-settings-url'),
 	feedSettingsDisplay: document.getElementById('feed-settings-display-mode'),
+	feedSettingsImageSize: document.getElementById('feed-settings-image-size'),
 	feedSettingsSort: document.getElementById('feed-settings-sort-direction'), feedSettingsError: document.getElementById('feed-settings-error'),
 	removeFeed: document.getElementById('remove-feed-btn'), saveFeedSettings: document.getElementById('save-feed-settings-btn'),
 	groupSettingsModal: document.getElementById('group-settings-modal'), groupSettingsForm: document.getElementById('group-settings-form'),

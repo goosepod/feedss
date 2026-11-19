@@ -231,6 +231,36 @@ var migrations = []migration{
 			return ensureColumn(db, "app_settings", "reading_panel_layout", "TEXT NOT NULL DEFAULT 'right'")
 		},
 	},
+	{
+		Version: 11,
+		Name:    "add_feed_image_size",
+		Apply: func(db *sql.DB) error {
+			if err := ensureColumn(db, "feeds", "image_size", "TEXT NOT NULL DEFAULT 'standard' CHECK (image_size IN ('small', 'standard', 'full'))"); err != nil {
+				return err
+			}
+			tx, err := db.Begin()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if _, err := tx.Exec("DROP TRIGGER IF EXISTS feeds_sync_update"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`CREATE TRIGGER feeds_sync_update AFTER UPDATE OF title, url, group_id, display_mode, sort_direction, image_size ON feeds
+				WHEN old.title IS NOT new.title OR old.url IS NOT new.url OR old.group_id IS NOT new.group_id
+					OR old.display_mode IS NOT new.display_mode OR old.sort_direction IS NOT new.sort_direction OR old.image_size IS NOT new.image_size BEGIN
+					INSERT INTO sync_revisions(user_id, revision, article_revision, subscription_revision)
+					VALUES(new.created_by, 1, 0, 1)
+					ON CONFLICT(user_id) DO UPDATE SET
+						revision = sync_revisions.revision + 1,
+						subscription_revision = sync_revisions.revision + 1,
+						updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+				END`); err != nil {
+				return err
+			}
+			return tx.Commit()
+		},
+	},
 }
 
 func runMigrations(db *sql.DB) error {

@@ -139,7 +139,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const feeds = [
 		{ id: 11, group_id: 1, title: 'Hacker News', url: 'https://news.ycombinator.com/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 79 },
 		{ id: 12, group_id: 1, title: 'Lobsters', url: 'https://lobste.rs/rss', display_mode: 'headline', sort_direction: 'desc', unread_count: 40 },
-		{ id: 21, group_id: 2, title: 'Board Game Quest', url: 'https://www.boardgamequest.com/feed/', display_mode: 'headline', sort_direction: 'desc', unread_count: 1 },
+		{ id: 21, group_id: 2, title: 'Board Game Quest', url: 'https://www.boardgamequest.com/feed/', display_mode: 'full', sort_direction: 'desc', unread_count: 1 },
 		{
 			id: 501, group_id: 50, title: 'Scroll test feed', url: 'https://example.com/feed.xml', display_mode: 'headline', sort_direction: 'desc', unread_count: 0,
 			last_refresh_error: 'http error: 404 Not Found', last_refresh_at: '2026-08-19T14:48:09Z', last_successful_refresh_at: '2026-08-18T14:48:09Z',
@@ -273,6 +273,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 		feed.group_id = nextGroupID;
 		feed.url = params.get('url') || feed.url;
 		feed.display_mode = params.get('display_mode') || feed.display_mode;
+		feed.image_size = params.get('image_size') || feed.image_size;
 		feed.sort_direction = params.get('sort_direction') || feed.sort_direction;
 		return route.fulfill({ json: { status: 'ok' } });
 	});
@@ -632,7 +633,7 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	await expect(page.locator('#status')).toBeHidden();
 
 	await expect(articleRows).toHaveCount(30);
-	await expect(page.locator('.article-content')).toHaveCount(30);
+	await expect(page.locator('.article-content')).toHaveCount(0);
 	await expect(page.locator('#article-count')).toContainText('articles');
 	const firstHeader = articleRows.first().locator('.article-header');
 	if (await firstHeader.getAttribute('aria-expanded') === 'true') await firstHeader.click();
@@ -653,9 +654,12 @@ test('core reader workflow is usable', async ({ page }, testInfo) => {
 	const feedSettingsDialog = page.getByRole('dialog', { name: 'Feed settings' });
 	await expect(feedSettingsDialog).toBeVisible();
 	await feedSettingsDialog.getByLabel('Display mode').selectOption('full');
+	await expect(feedSettingsDialog.getByLabel('Image size')).toHaveValue('standard');
+	await feedSettingsDialog.getByLabel('Image size').selectOption('small');
 	await feedSettingsDialog.getByRole('button', { name: 'Save feed', exact: true }).click();
 	await expect(feedSettingsDialog).toBeHidden();
 	await expect(page.locator('.article-content')).toHaveCount(30);
+	await expect(articleRows.first()).toHaveAttribute('data-image-size', 'small');
 	await expect(articleRows.first()).toHaveClass(/unread/);
 	await expect(articleRows.first().getByRole('link', { name: 'Comments', exact: true })).toHaveCount(1);
 	const [commentsPage] = await Promise.all([
@@ -873,24 +877,45 @@ test('article images stay within reading limits without stretching or cropping',
 		state.viewMode = 'group';
 		state.defaultDisplayMode = 'full';
 		state.groups = [{ id: 1, name: 'Image sizing' }];
+		state.feeds = [{ id: 11, image_size: 'small' }, { id: 12, image_size: 'full' }];
 		state.selectedGroupId = 1;
 		state.hasMoreArticles = false;
-		state.articles = [{ id: 345, title: 'Large images', link: 'https://example.org/article', is_read: true,
-			content: '<img src="https://example.org/wide.svg" width="2400" height="600"><img src="https://example.org/portrait.svg" width="1200" height="2400">' }];
-		state.expandedArticleIds = new Set([345]);
+		state.articles = [
+			{ id: 345, title: 'Standard images', is_read: true,
+				content: '<img src="https://example.org/wide.svg" width="2400" height="600"><img src="https://example.org/portrait.svg" width="1200" height="2400">' },
+			{ id: 346, feed_id: 11, title: 'Small article image', is_read: true,
+				content: '<p><a href="https://example.org"><img src="https://example.org/wide.svg"></a><span>Text after the image</span></p>' },
+			{ id: 347, feed_id: 12, title: 'Full size comic', is_read: true,
+				content: '<img src="https://example.org/portrait.svg" width="1200" height="2400">' },
+		];
+		state.expandedArticleIds = new Set([345, 346, 347]);
 		renderArticles();
 		document.querySelectorAll('.article-body img').forEach(image => { image.loading = 'eager'; });
 	});
-	const images = page.locator('.article-body img');
+	const standard = page.locator('[data-article-id="345"] .article-body');
+	const images = standard.locator('img');
 	for (let index = 0; index < 2; index++) {
 		const image = images.nth(index);
 		await expect.poll(() => image.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
 		const bounds = await image.boundingBox();
-		const body = await page.locator('.article-body').boundingBox();
+		const body = await standard.boundingBox();
 		expect(bounds.width).toBeLessThanOrEqual(Math.min(500, body.width));
 		expect(bounds.height).toBeLessThanOrEqual(testInfo.project.name === 'mobile' ? 224 : 340);
 		expect(bounds.width / bounds.height).toBeCloseTo(index === 0 ? 4 : 0.5, 1);
 	}
+	const small = page.locator('[data-article-id="346"] .article-body');
+	await expect.poll(() => small.locator('img').evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+	const smallBounds = await small.locator('img').boundingBox();
+	const textBounds = await small.getByText('Text after the image').boundingBox();
+	expect(smallBounds.width).toBeCloseTo(Math.min(320, (await small.boundingBox()).width), 0);
+	expect(textBounds.y - (smallBounds.y + smallBounds.height)).toBeGreaterThanOrEqual(12);
+
+	const full = page.locator('[data-article-id="347"] .article-body');
+	await expect.poll(() => full.locator('img').evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+	const fullBounds = await full.locator('img').boundingBox();
+	expect(fullBounds.width).toBeCloseTo(Math.min(1200, (await full.boundingBox()).width), 0);
+	expect(fullBounds.height).toBeGreaterThan(340);
+	expect(fullBounds.width / fullBounds.height).toBeCloseTo(0.5, 1);
 	await page.screenshot({ path: testInfo.outputPath('article-image-limits.png') });
 });
 
@@ -905,7 +930,7 @@ test('headline selection does not add full-content or original-page preview imag
 	for (const viewMode of ['feed', 'group']) {
 		await page.evaluate(viewMode => {
 			state.viewMode = viewMode;
-			state.defaultDisplayMode = 'headline';
+			state.defaultDisplayMode = 'full';
 			state.feeds = [{ id: 11, title: 'Headline feed', display_mode: 'headline' }];
 			state.groups = [{ id: 1, name: 'Headline group' }];
 			state.selectedFeedId = 11;
@@ -913,7 +938,8 @@ test('headline selection does not add full-content or original-page preview imag
 			state.hasMoreArticles = false;
 			state.articles = [
 				{ id: 345, feed_id: 11, title: 'Content image', link: 'https://example.org/345',
-					description: '<p>Short summary</p>', content: '<p>Full article</p><img src="https://example.org/full.png">', is_read: true },
+					description: '<p>Short summary<img src="https://example.org/inline.png"></p>',
+					content: '<p>Full article</p><img src="https://example.org/full.png">', is_read: true },
 				{ id: 346, feed_id: 11, title: 'Page image', link: 'https://example.org/346',
 					description: '<p>Another summary</p>', is_read: true },
 			];
@@ -932,6 +958,34 @@ test('headline selection does not add full-content or original-page preview imag
 		await expect(page.locator('.article-body img')).toHaveCount(0);
 	}
 	expect(imageRequests).toEqual([]);
+});
+
+test('group pages expand only articles whose feed enables previews', async ({ page }) => {
+	await login(page);
+	await page.waitForFunction(() => syncPollTimer !== null);
+	await page.route('**/api/articles?group_id=**', route => {
+		const nextPage = new URL(route.request().url()).searchParams.has('cursor_id');
+		const firstID = nextPage ? 2 : 4;
+		return route.fulfill({ json: {
+			articles: [
+				{ id: firstID, feed_id: 11, title: 'Headline article', description: 'Summary', is_read: true, order_index: firstID },
+				{ id: firstID - 1, feed_id: 12, title: 'Comic', content: 'Full comic content', is_read: true, order_index: firstID - 1 },
+			],
+			total: 4,
+			has_more: !nextPage,
+		} });
+	});
+	await page.evaluate(async () => {
+		state.groups = [{ id: 1, name: 'Mixed group' }];
+		state.feeds = [{ id: 11, display_mode: 'headline' }, { id: 12, display_mode: 'full' }];
+		state.viewMode = 'group';
+		state.selectedGroupId = 1;
+		state.defaultDisplayMode = 'headline';
+		await loadGroupArticles(1);
+		await loadMoreArticles();
+	});
+	await expect(page.locator('.article[data-feed-id="11"] .article-header[aria-expanded="false"]')).toHaveCount(2);
+	await expect(page.locator('.article[data-feed-id="12"] .article-body')).toHaveText(['Full comic content', 'Full comic content']);
 });
 
 test('article previews preserve full-content images and recover failed requests', async ({ page }) => {

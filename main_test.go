@@ -912,13 +912,35 @@ func TestFeedSettingsUpdateSelectedFeed(t *testing.T) {
 	}
 	feedID, _ := result.LastInsertId()
 	form := url.Values{"feed_id": {strconv.FormatInt(feedID, 10)}, "display_mode": {"full"}, "sort_direction": {"asc"}}
-	request := httptest.NewRequest(http.MethodPost, "/api/feeds/update", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	addSessionCookie(t, app, request, user)
-	response := httptest.NewRecorder()
-	app.handleUpdateFeedAPI(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	for _, test := range []struct {
+		imageSize string
+		wantSize  string
+		status    int
+	}{
+		{wantSize: "standard", status: http.StatusOK},
+		{imageSize: "full", wantSize: "full", status: http.StatusOK},
+		{wantSize: "full", status: http.StatusOK},
+		{imageSize: "invalid", wantSize: "full", status: http.StatusBadRequest},
+	} {
+		form.Del("image_size")
+		if test.imageSize != "" {
+			form.Set("image_size", test.imageSize)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/feeds/update", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		addSessionCookie(t, app, request, user)
+		response := httptest.NewRecorder()
+		app.handleUpdateFeedAPI(response, request)
+		if response.Code != test.status {
+			t.Fatalf("image size %q: unexpected response %d: %s", test.imageSize, response.Code, response.Body.String())
+		}
+		feeds, err := app.listFeeds(user.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(feeds) != 1 || feeds[0].ImageSize != test.wantSize {
+			t.Fatalf("image size %q: expected feed size %q, got %#v", test.imageSize, test.wantSize, feeds)
+		}
 	}
 	var displayMode, sortDirection string
 	if err := db.QueryRow("SELECT display_mode, sort_direction FROM feeds WHERE id = ?", feedID).Scan(&displayMode, &sortDirection); err != nil {
@@ -1419,8 +1441,15 @@ func TestCrossClientSyncUsesDurableUserScopedSQLiteRevisions(t *testing.T) {
 	if !afterState.ArticlesChanged || !afterState.SubscriptionsChanged || len(afterState.Articles) != 1 || !afterState.Articles[0].IsRead || !afterState.Articles[0].IsSaved {
 		t.Fatalf("article state was not synchronized: %#v", afterState)
 	}
+	if _, err := writer.db.Exec("UPDATE feeds SET image_size = 'small' WHERE id = ?", feedID); err != nil {
+		t.Fatal(err)
+	}
+	afterImageSize := requestSync(strconv.FormatInt(afterState.Revision, 10), articleID)
+	if afterImageSize.Revision != afterState.Revision+1 || afterImageSize.ArticlesChanged || !afterImageSize.SubscriptionsChanged {
+		t.Fatalf("image size was not synchronized: %#v", afterImageSize)
+	}
 
-	otherBaseline := afterState.Revision
+	otherBaseline := afterImageSize.Revision
 	if _, err := writer.db.Exec("INSERT INTO groups(name, created_by) VALUES('Private', ?)", other.ID); err != nil {
 		t.Fatal(err)
 	}
